@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>LiveVoice Translator</title>
+  <style>
+    :root {
+      --bg: #1e1e24;
+      --text: #ffffff;
+      --primary: #5c6bc0;
+      --danger: #ef5350;
+      --panel: #2b2b36;
+    }
+    body { 
+      font: 14px 'Segoe UI', system-ui, sans-serif; 
+      width: 300px; 
+      margin: 0; 
+      padding: 0; 
+      background: var(--bg); 
+      color: var(--text); 
+    }
+    .header {
+      background: var(--primary);
+      padding: 15px;
+      text-align: center;
+      font-size: 18px;
+      font-weight: bold;
+      letter-spacing: 1px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+    }
+    .content { padding: 15px; }
+    button { 
+      width: 100%; padding: 12px; margin-bottom: 10px; font-size: 15px;
+      border: 0; border-radius: 8px; cursor: pointer; color: #fff; font-weight: bold;
+      transition: transform 0.1s, opacity 0.2s;
+    }
+    button:active { transform: scale(0.98); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #start { background: var(--primary); }
+    #stop  { background: var(--danger); }
+    
+    #status { 
+      font-size: 13px; 
+      color: #aaa; 
+      text-align: center; 
+      margin-bottom: 15px; 
+      min-height: 20px; 
+    }
+    #status.error { color: var(--danger); font-weight: bold; }
+    
+    .control-group { 
+      background: var(--panel); 
+      padding: 10px; 
+      border-radius: 8px; 
+      margin-bottom: 10px; 
+    }
+    .control-group label { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 6px; color: #ccc; }
+    input[type=range] { width: 100%; accent-color: var(--primary); cursor: pointer; }
+    select { 
+      width: 100%; padding: 8px; border-radius: 6px; border: none; 
+      background: #3d3d4a; color: white; font-size: 14px; outline: none; cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">LiveVoice</div>
+  <div class="content">
+    <button id="start">Включить перевод</button>
+    <button id="stop" disabled>Выключить</button>
+    <div id="status">Выключено</div>
+
+    <div class="control-group">
+      <label>Громкость перевода: <span id="trans-vol-val">100%</span></label>
+      <input type="range" id="trans-vol" min="0" max="100" value="100">
+    </div>
+    
+    <div class="control-group">
+      <label>Громкость оригинала: <span id="orig-vol-val">100%</span></label>
+      <input type="range" id="orig-vol" min="0" max="100" value="100">
+    </div>
+
+    <div class="control-group">
+      <label>Голос переводчика:</label>
+      <select id="voice-select">
+        <option value="male_1">Мужской (Dmitri)</option>
+        <option value="female_1">Женский (Irina)</option>
+        <option value="male_2">Мужской (Ruslan)</option>
+      </select>
+    </div>
+	
+    <div class="control-group">
+      <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+        <input type="checkbox" id="show-subs" checked style="width: 16px; height: 16px; accent-color: var(--primary);"> 
+        Показывать субтитры
+      </label>
+    </div>
+
+    <div class="control-group">
+      <label>Размер субтитров:</label>
+      <select id="sub-size">
+        <option value="16">Маленький</option>
+        <option value="24" selected>Средний</option>
+        <option value="32">Большой</option>
+      </select>
+    </div>	
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

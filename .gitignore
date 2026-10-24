@@ -1,0 +1,30 @@
+# Виртуальное окружение
+.venv/
+venv/
+env/
+
+# Скачанные модели (они большие, их скачают пользователи сами)
+piper_models/
+argos_models/
+*.onnx
+*.onnx.json
+
+# Кэш Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Временные аудиофайлы
+*.wav
+*.mp3
+*.txt
+
+# Настройки редакторов
+.vscode/
+.idea/
+*.swp
+
+# Системные файлы
+.DS_Store
+Thumbs.db

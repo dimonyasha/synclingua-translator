@@ -1,13 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "LiveVoice Translator",
+  "name": "SyncLingua Translator",
   "version": "1.0.0",
   "description": "Синхронный перевод звука вкладки с озвучкой и субтитрами.",
   "minimum_chrome_version": "116",
   "permissions": ["tabCapture", "offscreen", "activeTab", "storage"],
   "background": { "service_worker": "background.js" },
   "action": {
-    "default_title": "LiveVoice Translator",
+    "default_title": "SyncLingua Translator",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icon16.png",

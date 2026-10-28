@@ -6,7 +6,7 @@ from .base import TranslationAdapter
 log = logging.getLogger(__name__)
 
 class OllamaTranslationAdapter(TranslationAdapter):
-    def __init__(self, source: str = "en", target: str = "ru", model: str = "qwen2.5:7b") -> None:
+    def __init__(self, source: str = "en", target: str = "ru", model: str = "translategemma:12b") -> None:
         self._source = source
         self._target = target
         self._model = model
@@ -36,7 +36,9 @@ class OllamaTranslationAdapter(TranslationAdapter):
         }
         
         try:
-            response = requests.post(self._url, json=payload, timeout=15)
+            # Увеличиваем таймаут до 60 секунд и просим Ollama держать модель в памяти 30 минут
+            payload["keep_alive"] = "30m" 
+            response = requests.post(self._url, json=payload, timeout=60)
             response.raise_for_status()
             result = response.json()
             

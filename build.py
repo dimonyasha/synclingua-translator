@@ -9,15 +9,15 @@ PyInstaller.__main__.run([
     '--noconfirm',
     '--clean',
     
-    # Добавляем папки с моделями
-    '--add-data=piper_models;piper_models',
+    # Добавляем папки с моделями Argos
     '--add-data=argos_models;argos_models',
     
-    # ВОТ ЭТА СТРОЧКА РЕШИТ ПРОБЛЕМУ:
-    # Она говорит PyInstaller'у скопировать все файлы данных (включая .onnx)
+    # Явно копируем espeak-ng-data внутрь папки piper
+    '--add-data=.venv_piper/Lib/site-packages/piper/espeak-ng-data;piper/espeak-ng-data',
+    
+    # Собираем все данные для Piper
+    '--collect-all=piper',
     '--collect-all=faster_whisper',
-    '--collect-all=ctranslate2', 
-    '--collect-all=onnxruntime',
     
     # Скрытые импорты для Uvicorn
     '--hidden-import=uvicorn.logging',
@@ -30,8 +30,8 @@ PyInstaller.__main__.run([
     '--hidden-import=uvicorn.protocols.websockets.auto',
     '--hidden-import=uvicorn.lifespan',
     '--hidden-import=uvicorn.lifespan.on',
-    '--hidden-import=piper',
     '--hidden-import=argostranslate',
+    '--hidden-import=ctranslate2',
 ])
 
 print("Сборка завершена! Ищите папку dist/SyncLingua-Server")

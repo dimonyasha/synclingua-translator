@@ -1,5 +1,7 @@
 # 🎙️ SyncLingua Translator
 
+![SyncLingua — локальный переводчик](cover.png)
+
 **Синхронный перевод звука вкладки с озвучкой и субтитрами. 100% локально и бесплатно.**
 
 [![Статус](https://img.shields.io/badge/Status-MVP-success)](#)

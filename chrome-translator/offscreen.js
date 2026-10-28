@@ -17,7 +17,11 @@ let workletNode = null;
 let originalGain = null;
 let translationGain = null;
 let ws = null;
+let preferredVoice = null; // Голос, который выбрал пользователь
+let serverEngine = null;   // 'xtts' или 'piper'
+let serverVoice = null;    // Голос, который сейчас активен на сервере
 let active = false;
+let preferredChunkSeconds = 4.0;
 let reconnectTimer = null;
 let reconnectAttempts = 0;
 let nextPlayTime = 0;          // когда закончится последний запланированный кусок перевода
@@ -38,10 +42,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     try {
       if (msg.type === 'start-capture') {
+        preferredVoice = msg.voice ?? null;
+        preferredChunkSeconds = msg.chunkSeconds ?? 4.0;
         await startCapture(msg.streamId);
       } 
-      else if (msg.type === 'stop-capture') {
-        await stopCapture();
+      else if (msg.type === 'stop-capture') await stopCapture();
+      else if (msg.type === 'set-voice') {
+        preferredVoice = msg.voice;
+        applyPreferredVoice();
+      }
+      else if (msg.type === 'set-chunk') {
+        preferredChunkSeconds = msg.value;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'set-chunk', value: preferredChunkSeconds }));
+        }
       }
       else if (msg.type === 'set-volume') {
         currentTransVol = msg.transVol;
@@ -128,7 +142,7 @@ async function startCapture(streamId) {
 async function stopCapture() {
   active = false;
   clearTimeout(reconnectTimer);
-
+  serverEngine = serverVoice = null;
   if (ws) {
     ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
     try { ws.close(); } catch { /* ignore */ }
@@ -151,15 +165,16 @@ function connectWs() {
   const sock = new WebSocket(WS_URL);
   ws = sock;
 
-  sock.onopen = () => {
-    if (sock !== ws) return;
-    reconnectAttempts = 0;
-    // Явно говорим серверу формат (совпадает с его значениями по умолчанию)
-    sock.send(JSON.stringify({
-      type: 'config', format: 'pcm16', sample_rate: TARGET_RATE, channels: 1,
-    }));
-    report('running');
-  };
+    sock.onopen = () => {
+      if (sock !== ws) return;
+      reconnectAttempts = 0;
+      sock.send(JSON.stringify({
+        type: 'config', format: 'pcm16', sample_rate: TARGET_RATE, channels: 1,
+      }));
+      // Отправляем сохранённую скорость чанка
+      sock.send(JSON.stringify({ type: 'set-chunk', value: preferredChunkSeconds }));
+      report('running');
+    };
 
   sock.onmessage = (ev) => {
     if (sock === ws) handleServerMessage(ev.data);
@@ -182,6 +197,17 @@ function sendChunk(buffer) {
   ws.send(JSON.stringify({ type: 'audio', data: bytesToBase64(new Uint8Array(buffer)) }));
 }
 
+// Отправляем голос на сервер, если он изменился
+function applyPreferredVoice() {
+  if (!preferredVoice) return;
+  if (preferredVoice === serverVoice) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  
+  // Всегда отправляем set-xtts-voice, сервер обработает его для любого движка
+  ws.send(JSON.stringify({ type: 'set-xtts-voice', voice: preferredVoice }));
+  console.log(`[offscreen] Отправлена смена голоса: ${preferredVoice}`);
+}
+
 function handleServerMessage(raw) {
   let msg;
   try {
@@ -200,8 +226,16 @@ function handleServerMessage(raw) {
       console.warn('[server error]', msg.message);
       report('running', `Сервер: ${msg.message}`);
       break;
-    case 'no_speech':
     case 'ready':
+      serverEngine = msg.engine ?? null;
+      serverVoice = msg.voice ?? null;
+      applyPreferredVoice(); // Отправляем голос сразу после подключения
+      break;
+    case 'voice_changed':
+      serverVoice = msg.voice;
+      report('running', `Голос: ${msg.voice}`);
+      break;
+    case 'no_speech':
     case 'info':
       break;
     default:

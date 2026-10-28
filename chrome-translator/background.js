@@ -52,7 +52,13 @@ async function startTranslation({ tabId, streamId }) {
   await setState({ active: true, status: 'starting', detail: '', tabId });
   try {
     await ensureOffscreen();
-    const res = await sendToOffscreen({ type: 'start-capture', streamId });
+    const { xttsVoice, voice, chunkSeconds } = await chrome.storage.local.get(['xttsVoice', 'voice', 'chunkSeconds']);
+    const res = await sendToOffscreen({ 
+      type: 'start-capture', 
+      streamId, 
+      voice: xttsVoice ?? voice ?? null,
+      chunkSeconds: chunkSeconds ?? 4.0
+    });
     if (!res?.ok) throw new Error(res?.error || 'Offscreen-документ не запустил захват');
     return { ok: true };
   } catch (err) {
@@ -92,9 +98,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case 'set-volume':
         await sendToOffscreen({ type: 'set-volume', transVol: msg.transVol, origVol: msg.origVol });
         return { ok: true };
-      case 'set-voice':
-        await sendToOffscreen({ type: 'set-voice', voice: msg.voice });
+      case 'set-voice': {
+        await chrome.storage.local.set({ xttsVoice: msg.voice }); // можно оставить, работает
+        if ((await getState()).active && (await hasOffscreen())) {
+          try { await sendToOffscreen({ type: 'set-voice', voice: msg.voice }, 1); }
+          catch { /* offscreen закрывается */ }
+        }
         return { ok: true };
+      }
       case 'update-sub-settings':
         // Отправляем настройки на активную вкладку в content.js
         const currentState = await getState();
@@ -107,7 +118,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           }).catch(() => {});
         }
         return { ok: true };
-        
+      case 'set-chunk':
+        await chrome.storage.local.set({ chunkSeconds: msg.value });
+        if ((await getState()).active && (await hasOffscreen())) {
+          try { await sendToOffscreen({ type: 'set-chunk', value: msg.value }, 1); } catch {}
+        }
+        return { ok: true };
+      case 'set-keep-alive':
+        await chrome.storage.local.set({ keepAlive: msg.value });
+        return { ok: true };        
       // --- ВОТ СЮДА ДОБАВЛЯЕМ НОВЫЙ КЕЙС ---
       case 'show-subtitle':
         const state = await getState();
@@ -130,9 +149,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 // Автоматически останавливаем захват, если пользователь переключил вкладку
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   const state = await getState();
-  // Если перевод включен, и мы ушли на другую вкладку — выключаем
   if (state.active && state.tabId !== activeInfo.tabId) {
-    console.log("Смена вкладки: останавливаем перевод, чтобы освободить захват.");
-    await stopTranslation();
+    const { keepAlive } = await chrome.storage.local.get('keepAlive');
+    if (!keepAlive) {
+      console.log("Смена вкладки: останавливаем перевод.");
+      await stopTranslation();
+    }
   }
 });

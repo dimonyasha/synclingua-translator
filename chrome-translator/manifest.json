@@ -5,6 +5,10 @@
   "description": "Синхронный перевод звука вкладки с озвучкой и субтитрами.",
   "minimum_chrome_version": "116",
   "permissions": ["tabCapture", "offscreen", "activeTab", "storage"],
+  "host_permissions": [
+    "http://127.0.0.1:8000/*",
+    "ws://127.0.0.1:8000/*"
+  ],
   "background": { "service_worker": "background.js" },
   "action": {
     "default_title": "SyncLingua Translator",
@@ -22,7 +26,14 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
+      "matches": [
+        "*://*.youtube.com/*",
+        "*://*.twitch.tv/*",
+        "*://*.vimeo.com/*",
+        "*://*.coursera.org/*",
+        "*://*.udemy.com/*",
+        "*://meet.google.com/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_idle"
     }

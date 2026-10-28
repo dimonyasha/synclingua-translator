@@ -1,6 +1,7 @@
 let subtitleDiv = null;
 let hideTimeout = null;
 let currentSettings = { show: true, size: '24' };
+let playerObserver = null;
 
 // Загружаем настройки при старте
 chrome.storage.local.get(['showSubs', 'subSize'], (res) => {
@@ -13,6 +14,31 @@ function updateStyle() {
   if (!subtitleDiv) return;
   subtitleDiv.style.setProperty('font-size', `${currentSettings.size}px`, 'important');
   subtitleDiv.style.setProperty('display', currentSettings.show ? 'block' : 'none', 'important');
+}
+
+function waitForPlayerAndInit() {
+  if (subtitleDiv) return;
+
+  const player = document.querySelector('.html5-video-player') 
+              || document.querySelector('video')?.parentElement;
+
+  if (player) {
+    initSubtitles();
+    return;
+  }
+
+  if (!playerObserver) {
+    playerObserver = new MutationObserver(() => {
+      const p = document.querySelector('.html5-video-player') 
+             || document.querySelector('video')?.parentElement;
+      if (p) {
+        playerObserver.disconnect();
+        playerObserver = null;
+        initSubtitles();
+      }
+    });
+    playerObserver.observe(document.body, { childList: true, subtree: true });
+  }
 }
 
 function initSubtitles() {
@@ -43,7 +69,7 @@ function initSubtitles() {
               || document.body;
   
   player.appendChild(subtitleDiv);
-  updateStyle(); // Применяем сохраненные настройки (размер, видимость)
+  updateStyle();
   
   if (player !== document.body) {
       const observer = new MutationObserver(() => {
@@ -54,6 +80,9 @@ function initSubtitles() {
       observer.observe(player, { childList: true, subtree: false });
   }
 }
+
+// Запускаем ожидание плеера сразу при загрузке content.js
+waitForPlayerAndInit();
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.target !== 'content') return;
@@ -66,11 +95,25 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 
   if (msg.type === 'subtitle') {
-    if (!subtitleDiv) initSubtitles();
+    if (!subtitleDiv) {
+      // Плеер ещё не готов — ждём и показываем текст с задержкой
+      waitForPlayerAndInit();
+      setTimeout(() => {
+        if (!subtitleDiv) return;
+        subtitleDiv.textContent = msg.text;
+        if (currentSettings.show) {
+          subtitleDiv.style.setProperty('opacity', '1', 'important');
+        }
+        clearTimeout(hideTimeout);
+        hideTimeout = setTimeout(() => {
+          subtitleDiv.style.setProperty('opacity', '0', 'important');
+        }, 4000);
+      }, 300);
+      return;
+    }
     
     subtitleDiv.textContent = msg.text;
     
-    // Показываем только если включено в настройках
     if (currentSettings.show) {
       subtitleDiv.style.setProperty('opacity', '1', 'important'); 
     }

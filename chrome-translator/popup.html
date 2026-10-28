@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <title>LiveVoice Translator</title>
+  <title>SyncLingua Translator</title>
   <style>
     :root {
       --bg: #1e1e24;
@@ -13,7 +13,7 @@
     }
     body { 
       font: 14px 'Segoe UI', system-ui, sans-serif; 
-      width: 300px; 
+      width: 340px; 
       margin: 0; 
       padding: 0; 
       background: var(--bg); 
@@ -60,6 +60,10 @@
       width: 100%; padding: 8px; border-radius: 6px; border: none; 
       background: #3d3d4a; color: white; font-size: 14px; outline: none; cursor: pointer;
     }
+    #voice-block { margin: 4px 0 10px; }
+    #voice-block label { display: block; font-size: 12px; color: #ccc; margin-bottom: 4px; }
+    #voice-block select { width: 100%; padding: 7px; font-size: 14px; border-radius: 6px; background: #3d3d4a; color: white; border: none; outline: none; }
+    #voice-hint { font-size: 11px; color: #888; margin-top: 4px; line-height: 1.2; }	
   </style>
 </head>
 <body>
@@ -68,6 +72,11 @@
     <button id="start">Включить перевод</button>
     <button id="stop" disabled>Выключить</button>
     <div id="status">Выключено</div>
+    <div id="voice-block" hidden>
+      <label for="xtts-voice-select">Голос озвучки (клонирование)</label>
+      <select id="xtts-voice-select"></select>
+      <div id="voice-hint">Голос сменится со следующей фразы. Анализ нового образца может занять пару секунд.</div>
+    </div>	
 
     <div class="control-group">
       <label>Громкость перевода: <span id="trans-vol-val">100%</span></label>
@@ -79,12 +88,13 @@
       <input type="range" id="orig-vol" min="0" max="100" value="100">
     </div>
 
-    <div class="control-group">
-      <label>Голос переводчика:</label>
+    <div class="control-group" id="piper-voice-block">
+      <label>Голос переводчика (Piper):</label>
       <select id="voice-select">
         <option value="male_1">Мужской (Dmitri)</option>
-        <option value="female_1">Женский (Irina)</option>
         <option value="male_2">Мужской (Ruslan)</option>
+        <option value="male_3">Мужской (Denis)</option>
+        <option value="female_1">Женский (Irina)</option>
       </select>
     </div>
 	
@@ -103,6 +113,24 @@
         <option value="32">Большой</option>
       </select>
     </div>	
+    <div class="control-group">
+      <label>Задержка перевода (сек): <span id="chunk-val">4.0</span></label>
+      <input type="range" id="chunk-seconds" min="1" max="6" step="0.5" value="4.0">
+    </div>
+    <div class="control-group">
+      <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+        <input type="checkbox" id="keep-alive" checked style="width: 16px; height: 16px; accent-color: var(--primary);"> 
+        Продолжать при смене вкладок
+      </label>
+    </div>	
+	    <!-- Блок доната -->
+    <div class="donate-block" style="text-align: center; margin-top: 15px; padding-top: 10px; border-top: 1px solid #3d3d4a;">
+      <p style="font-size: 12px; color: #aaa; margin-bottom: 8px;">Понравился перевод?</p>
+      <a href="https://boosty.to/dimonyasha" target="_blank" style="display: inline-flex; align-items: center; gap: 6px; background: rgba(239, 83, 80, 0.15); color: #ef5350; padding: 8px 16px; border-radius: 8px; text-decoration: none; font-size: 13px; font-weight: 600; transition: background 0.2s;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+        Поддержать чашечкой кофе
+      </a>
+    </div>
   </div>
   <script src="popup.js"></script>
 </body>

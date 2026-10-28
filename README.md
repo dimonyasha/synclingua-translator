@@ -1,6 +1,10 @@
 # 🎙️ SyncLingua Translator
 
-![SyncLingua — локальный переводчик](cover.png)
+<p align="center">
+  <a href="https://github.com/dimonyasha/synclingua-translator/releases">
+    <img src="cover.png" alt="SyncLingua — локальный синхронный переводчик EN→RU" width="900">
+  </a>
+</p>
 
 **Синхронный перевод звука вкладки с озвучкой и субтитрами. 100% локально и бесплатно.**
 

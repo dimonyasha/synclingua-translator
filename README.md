@@ -18,9 +18,8 @@ SyncLingua — это расширение для Chrome и локальный �
 *   **Гибкость:** Настройка громкости перевода и оригинала, а также задержки перевода.
 
 ## 📸 Скриншоты
-*(Сюда нужно будет вставить ваши скриншоты после того, как вы загрузите их в репозиторий)*
-![Работа на YouTube](ссылка_на_ваш_скриншот_1.jpg)
-![Работа на Twitch](ссылка_на_ваш_скриншот_2.jpg)
+[![Работа на YouTube](ссылка_на_ваш_скриншот_1.jpg)](https://github.com/dimonyasha/synclingua-translator/blob/main/screen_youtube.png)
+[![Работа на Twitch](ссылка_на_ваш_скриншот_2.jpg)](https://github.com/dimonyasha/synclingua-translator/blob/main/screen_twitch.png)
 
 ---
 

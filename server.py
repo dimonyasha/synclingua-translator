@@ -19,27 +19,100 @@
 """
 import os
 import sys
-if sys.stdout.encoding.lower() != 'utf-8':
+import logging
+
+# Приветственное сообщение с донатом
+print("=" * 60)
+print("SyncLingua Server v1.0")
+print("Проект работает полностью локально. Спасибо, что вы с нами!")
+print("Поддержать разработку: https://boosty.to/dimonyasha")
+print("=" * 60)
+
+log = logging.getLogger("server")
+
+# Настраиваем кодировку
+if sys.stdout and sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
-os.environ["ARGOS_PACKAGES_DIR"] = r"z:\Projects\LiveVoice\audio_translator\argos_models"
+
+# Указываем Piper, где искать данные eSpeak NG в собранном .exe
+import shutil
+
+if getattr(sys, 'frozen', False):
+    _source_espeak = None
+    _possible_paths = [
+        os.path.join(sys._MEIPASS, 'piper', 'espeak-ng-data'),
+        os.path.join(sys._MEIPASS, 'piper_phonemize', 'espeak-ng-data'),
+        os.path.join(sys._MEIPASS, 'espeak-ng-data'),
+    ]
+    for _path in _possible_paths:
+        if os.path.isdir(_path):
+            _source_espeak = _path
+            break
+    
+    if _source_espeak:
+        # Безопасная папка без кириллицы
+        _safe_dir = os.path.join(os.environ.get('PROGRAMDATA', 'C:\\ProgramData'), 'SyncLingua')
+        os.makedirs(_safe_dir, exist_ok=True)
+        _dest_espeak = os.path.join(_safe_dir, 'espeak-ng-data')
+        
+        if not os.path.isdir(_dest_espeak) or not os.listdir(_dest_espeak):
+            log.info("Копирование espeak-ng-data в безопасную директорию...")
+            try:
+                shutil.copytree(_source_espeak, _dest_espeak)
+            except FileExistsError:
+                pass
+            
+        os.environ['ESPEAK_DATA_PATH'] = _dest_espeak
+        log.info("Установлен ESPEAK_DATA_PATH: %s", _dest_espeak)
+
+# --- ПОДКЛЮЧАЕМ DLL FFMPEG ДЛЯ TORCHCODEC ---
+from paths import get_base_path
+from pathlib import Path
+
+# Папка bin лежит рядом с .exe
+ffmpeg_bin_path = Path(sys.executable).parent / "bin" if getattr(sys, "frozen", False) else Path(__file__).resolve().parent / "bin"
+
+if ffmpeg_bin_path.is_dir():
+    os.add_dll_directory(str(ffmpeg_bin_path))
+    os.environ["PATH"] = str(ffmpeg_bin_path) + os.pathsep + os.environ.get("PATH", "")
+    print(f"[FFmpeg] DLL directory added: {ffmpeg_bin_path}")
+else:
+    print(f"[FFmpeg] WARNING: Path not found: {ffmpeg_bin_path}")
+# --------------------------------------------
+
+# 4. Пути к ресурсам (Argos). Должно быть ДО импорта pipeline/argostranslate
+ARGOS_PACKAGES_DIR = get_base_path() / "argos_models"
+os.environ["ARGOS_PACKAGES_DIR"] = str(ARGOS_PACKAGES_DIR)
+
+# 5. Остальные импорты
+import httpx
+import ollama
 import asyncio
 import base64
 import binascii
 import io
 import json
-import logging
-import os
 import tempfile
 import wave
 import requests
-from huggingface_hub import set_client_factory
+TTS_ENGINE = os.getenv("TTS_ENGINE", "piper").lower()
+XTTS_DEVICE = os.getenv("XTTS_DEVICE", "auto")
 
-def create_client_without_ssl_verify():
-    session = requests.Session()
-    session.verify = False
-    return session
+# Безопасный импорт для разных версий huggingface_hub
+# --- ПРИНУДИТЕЛЬНЫЙ ОБХОД SSL ДЛЯ ВСЕХ ЗАПРОСОВ (обход Касперского) ---
+import urllib3
 
-set_client_factory(create_client_without_ssl_verify)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Патчим метод requests, чтобы он всегда игнорировал проверку сертификатов
+_original_request = requests.Session.request
+
+def _patched_request(self, *args, **kwargs):
+    kwargs['verify'] = False
+    return _original_request(self, *args, **kwargs)
+
+requests.Session.request = _patched_request
+# ----------------------------------------------------------------------
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -57,10 +130,12 @@ log = logging.getLogger("server")
 DEFAULT_SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "16000"))
 CHUNK_SECONDS = 3.0  # Было 2.0. 
 MIN_SECONDS = float(os.getenv("MIN_SECONDS", "0.5"))
-MAX_QUEUE = 3        # Было 5. Теперь сервер хранит только 1 кусок в очереди. Если не успевает — выкидывает старые.
+MAX_QUEUE = 30  # Размер очереди: если переполнена, старые задачи отбрасываются
 ASR_MODEL = os.getenv("ASR_MODEL", "base")
 ASR_DEVICE = os.getenv("ASR_DEVICE", "auto")
 SAMPLE_WIDTH = 2  # PCM16 = 2 байта на сэмпл
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "translategemma:4b")
 
 # Маркер сообщения RuntimeError из pipeline.py, когда речь не найдена.
 # (Надёжнее завести в pipeline.py отдельный NoSpeechError и ловить его.)
@@ -68,14 +143,33 @@ NO_SPEECH_MARKER = "Речь"
 
 
 # ---------------------------------------------------------------- пайплайн
+def _app_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent
+
+VOICES_DIR = Path(os.getenv("VOICES_DIR", _app_dir() / "voices"))
+XTTS_DEFAULT_VOICE = os.getenv("XTTS_VOICE", "reference.wav")
+
+def build_tts():
+    if TTS_ENGINE == "xtts":
+        from adapters.xtts import XTTSAdapter
+        return XTTSAdapter(...)
+    elif TTS_ENGINE == "f5":
+        from adapters.f5_tts import F5TTSAdapter
+        return F5TTSAdapter(voices_dir=VOICES_DIR, default_voice="reference_f5.wav", device=XTTS_DEVICE)
+    elif TTS_ENGINE == "piper":
+        from adapters import EdgeTTSAdapter 
+        return EdgeTTSAdapter(voice_type="male_1")
+    raise ValueError(f"Неизвестный TTS_ENGINE={TTS_ENGINE!r}")
+
 def build_pipeline() -> TranslationPipeline:
-    from adapters import FasterWhisperASR, EdgeTTSAdapter
+    from adapters import FasterWhisperASR, OllamaTranslationAdapter
 
     return TranslationPipeline(
         asr=FasterWhisperASR(model_size=ASR_MODEL, device=ASR_DEVICE),
-        # ИСПОЛЬЗУЕМ OLLAMA ВМЕСТО ARGOS
-        translator=OllamaTranslationAdapter(source="en", target="ru", model="qwen2.5:7b"),
-        tts=EdgeTTSAdapter(voice_type="male_1"), 
+        translator=OllamaTranslationAdapter(source="en", target="ru", model=OLLAMA_MODEL),
+        tts=build_tts(), # <--- Вот наша новая функция
     )
 
 
@@ -93,6 +187,11 @@ def translate_pcm(pipeline: TranslationPipeline, pcm: bytes,
 
         # Получаем и файл, и текст
         _, translated_text = pipeline.run(wav_path, mp3_path)
+        
+        # Проверка: если файл не создался (заблокирован антивирусом или еще что-то)
+        if not mp3_path.exists():
+            return b"", translated_text  # Возвращаем пустой звук, чтобы не ломать соединение
+            
         return mp3_path.read_bytes(), translated_text
 
 
@@ -167,6 +266,7 @@ class Session:
         self.queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUE)
         self.seq = 0
         self._send_lock = asyncio.Lock()
+        self.chunk_seconds = CHUNK_SECONDS   # <--- ДОБАВИТЬ
 
     # ---- отправка
     async def send(self, payload: dict) -> None:
@@ -181,6 +281,19 @@ class Session:
         log.error("Ошибка (seq=%s): %s", seq, message)
         await self.send({"type": "error", "seq": seq, "message": message})
 
+    async def _on_set_voice(self, voice: object) -> None:
+        tts = getattr(self.pipeline, "_tts", None)
+        if not hasattr(tts, "change_voice"):
+            await self.send_error("Текущий TTS-движок не поддерживает смену голоса")
+            return
+        if not isinstance(voice, str):
+            await self.send_error("Не указано имя голоса")
+            return
+        if tts.change_voice(voice):
+            await self.send({"type": "voice_changed", "voice": tts.current_voice})
+        else:
+            await self.send_error(f"Голос не найден: {voice}")
+            
     # ---- приём
     async def handle_message(self, msg: dict) -> None:
         """Обработка одного сообщения из ws.receive()."""
@@ -207,12 +320,19 @@ class Session:
                 await self.send_error("Битый base64 в аудио-чанке")
                 return
             await self._on_audio(raw)
-        elif mtype == "set-voice":
-            voice = data.get("voice", "male_1")
-            # Меняем голос в пайплайне (нам нужно добавить метод смены голоса в TTS адаптер)
-            if hasattr(self.pipeline._tts, 'change_voice'):
-                self.pipeline._tts.change_voice(voice)
-                await self.send({"type": "info", "message": f"voice changed to {voice}"})        
+        elif mtype == "set-chunk":
+            try:
+                val = float(data.get("value"))
+                if 0.5 <= val <= 10.0:
+                    self.chunk_seconds = val
+                    await self.send({"type": "info", "message": f"chunk set to {val}"})
+                else:
+                    await self.send_error("Недопустимое значение chunk_seconds")
+            except (ValueError, TypeError):
+                await self.send_error("Некорректное значение chunk_seconds")
+        elif mtype in ("set-voice", "set-xtts-voice"):
+            # Обрабатываем оба типа одинаково (для Piper и XTTS/F5)
+            await self._on_set_voice(data.get("voice"))
         elif mtype == "flush":
             await self._flush()
         elif mtype == "reset":
@@ -252,11 +372,10 @@ class Session:
             return
 
         # Авто-flush: накопилось достаточно аудио
-        if self.buffer.seconds >= CHUNK_SECONDS:
+        if self.buffer.seconds >= self.chunk_seconds:
             await self._flush()
 
     async def _flush(self) -> None:
-        """Забрать буфер и поставить в очередь на обработку."""
         if self.buffer.seconds < MIN_SECONDS:
             await self.send({"type": "info", "message": "buffer too short, skipped"})
             return
@@ -303,14 +422,117 @@ class Session:
             finally:
                 self.queue.task_done()
 
+# ---------------------------------------------------------------- Ollama
+class OllamaSetupError(RuntimeError):
+    """Ollama недоступна или модель не удалось подготовить."""
+
+
+def _normalize(name: str) -> str:
+    """'qwen2.5' и 'qwen2.5:latest' - одна и та же модель."""
+    return name if ":" in name else f"{name}:latest"
+
+
+def _installed_models(client: ollama.Client) -> set[str]:
+    """Имена установленных моделей. Поле называется 'model' (новые версии
+    библиотеки) или 'name' (старые), поддерживаем оба варианта."""
+    resp = client.list()
+    names = set()
+    for m in resp["models"]:
+        name = m.get("model") or m.get("name")
+        if name:
+            names.add(_normalize(name))
+    return names
+
+
+def _pull_with_progress(client: ollama.Client, model: str) -> None:
+    """Скачивание модели с прогрессом в консоли (одна обновляемая строка на слой)."""
+    last_status: str | None = None
+    last_pct = -1
+    line_open = False  # открыта ли строка с \r, которую надо завершить переводом строки
+
+    for p in client.pull(model, stream=True):
+        status = p.get("status") or ""
+        total, done = p.get("total"), p.get("completed")
+
+        if total and done is not None:
+            pct = int(done * 100 / total)
+            if status == last_status and pct == last_pct:
+                continue  # не перерисовываем без изменений
+            sys.stdout.write(
+                f"\r{status[:24]:<24} {pct:3d}%  "
+                f"({done / 1e9:.2f} / {total / 1e9:.2f} ГБ)")
+            sys.stdout.flush()
+            line_open = True
+            last_pct = pct
+        elif status != last_status:
+            if line_open:
+                sys.stdout.write("\n")
+                line_open = False
+            print(status, flush=True)
+            last_pct = -1
+        last_status = status
+
+    if line_open:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+
+def init_ollama(model: str = OLLAMA_MODEL, host: str = OLLAMA_HOST) -> None:
+    """Проверяет, что Ollama запущена и модель скачана; при необходимости скачивает.
+
+    Блокирующая функция: из async-кода вызывайте через run_in_executor.
+    Бросает OllamaSetupError с понятным сообщением при любой проблеме.
+    """
+    model = _normalize(model)
+
+    # 1. Сервер Ollama запущен? Короткий таймаут, чтобы не ждать вечно.
+    try:
+        installed = _installed_models(ollama.Client(host=host, timeout=5))
+    except (ConnectionError, httpx.ConnectError, httpx.TimeoutException):
+        raise OllamaSetupError(
+            f"\nНе удалось подключиться к Ollama по адресу {host}.\n"
+            "  1) Установите Ollama: https://ollama.com/download\n"
+            "  2) Запустите её: приложение Ollama или команда `ollama serve`\n"
+            "  3) Перезапустите этот сервер.\n"
+        ) from None
+    except ollama.ResponseError as exc:
+        raise OllamaSetupError(f"Ollama ответила ошибкой: {exc}") from exc
+
+    # 2. Модель уже есть?
+    if model in installed:
+        log.info("Ollama: модель %s уже установлена", model)
+        return
+
+    # 3. Нет - скачиваем (таймаут None: загрузка может идти десятки минут)
+    log.warning("Ollama: модель %s не найдена, начинаю загрузку (это может занять время)...", model)
+    try:
+        _pull_with_progress(ollama.Client(host=host, timeout=None), model)
+    except ollama.ResponseError as exc:
+        raise OllamaSetupError(
+            f"Не удалось скачать модель {model}: {exc}\n"
+            "Проверьте интернет-соединение и название модели.") from exc
+    except (ConnectionError, httpx.HTTPError) as exc:
+        raise OllamaSetupError(f"Соединение с Ollama прервалось во время загрузки: {exc}") from exc
+
+    # 4. Контрольная проверка
+    if model not in _installed_models(ollama.Client(host=host, timeout=5)):
+        raise OllamaSetupError(f"Модель {model} не появилась в списке после загрузки.")
+    log.info("Ollama: модель %s готова", model)
 
 # ---------------------------------------------------------------- приложение
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Один поток на пайплайн: Whisper-модель общая и тяжёлая, запросы
-    # от всех клиентов выполняются строго по очереди.
-    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pipeline")
     loop = asyncio.get_running_loop()
+
+    # 1. Ollama: fail fast (проверка до загрузки Whisper)
+    try:
+        await loop.run_in_executor(None, init_ollama)
+    except OllamaSetupError as exc:
+        log.critical("%s", exc)
+        raise  # uvicorn завершит запуск
+
+    # 2. Остальные модели
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pipeline")
     log.info("Загрузка моделей...")
     app.state.pipeline = await loop.run_in_executor(executor, build_pipeline)
     app.state.executor = executor
@@ -318,7 +540,14 @@ async def lifespan(app: FastAPI):
     yield
     executor.shutdown(wait=False, cancel_futures=True)
 
-
+def voices_info(pipeline: TranslationPipeline) -> dict:
+    tts = getattr(pipeline, "_tts", None)
+    if TTS_ENGINE == "xtts" and hasattr(tts, "list_voices"):
+        return {"engine": "xtts", "voices": tts.list_voices(), "voice": tts.current_voice}
+    elif TTS_ENGINE == "f5" and hasattr(tts, "list_voices"):
+        return {"engine": "f5", "voices": tts.list_voices(), "voice": tts.current_voice}
+    return {"engine": TTS_ENGINE, "voices": [], "voice": None}
+    
 app = FastAPI(title="Realtime audio translator", lifespan=lifespan)
 
 
@@ -326,6 +555,9 @@ app = FastAPI(title="Realtime audio translator", lifespan=lifespan)
 async def health() -> dict:
     return {"status": "ok"}
 
+@app.get("/voices")
+async def get_voices() -> dict:
+    return voices_info(app.state.pipeline)
 
 @app.websocket("/ws/translate")
 async def ws_translate(ws: WebSocket) -> None:
@@ -337,7 +569,8 @@ async def ws_translate(ws: WebSocket) -> None:
     await session.send({
         "type": "ready", "format": session.format,
         "sample_rate": session.buffer.sample_rate,
-        "channels": session.buffer.channels, "chunk_seconds": CHUNK_SECONDS,
+        "channels": session.buffer.channels, "chunk_seconds": session.chunk_seconds,
+        **voices_info(app.state.pipeline),
     })
 
     try:

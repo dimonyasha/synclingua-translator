@@ -2,12 +2,9 @@ import argparse
 import logging
 import sys
 import os
-os.environ["ARGOS_PACKAGES_DIR"] = r"z:\Projects\LiveVoice\audio_translator\argos_models"
 from pathlib import Path
-from adapters import EdgeTTSAdapter, FasterWhisperASR, GoogleTranslationAdapter
-from adapters.tts import DEFAULT_VOICE
-from pipeline import TranslationPipeline
 
+# Точечный обход SSL только для HuggingFace (чтобы не ломал Касперский)
 import requests
 from huggingface_hub import set_client_factory
 
@@ -17,6 +14,13 @@ def create_client_without_ssl_verify():
     return session
 
 set_client_factory(create_client_without_ssl_verify)
+
+# Задаем путь к моделям Argos относительно самого файла main.py
+os.environ.setdefault("ARGOS_PACKAGES_DIR", str(Path(__file__).resolve().parent / "argos_models"))
+
+from adapters import EdgeTTSAdapter, FasterWhisperASR, GoogleTranslationAdapter
+from adapters.tts import DEFAULT_VOICE
+from pipeline import TranslationPipeline
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="EN audio -> RU audio (PoC)")
@@ -31,13 +35,14 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
+    
     if not args.audio.is_file():
         print(f"Файл не найден: {args.audio}", file=sys.stderr)
         return 1
 
     pipeline = TranslationPipeline(
         asr=FasterWhisperASR(model_size=args.model, device=args.device),
-       translator=GoogleTranslationAdapter(source="en", target="ru"),
+        translator=GoogleTranslationAdapter(source="en", target="ru"),
         tts=EdgeTTSAdapter(voice=args.voice),
     )
     try:

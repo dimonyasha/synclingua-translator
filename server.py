@@ -13,7 +13,7 @@
 
 Сервер -> клиент:
   {"type": "ready", ...}                  # после подключения
-  {"type": "audio", "seq": N, "format": "mp3", "data": "<base64>"}
+  {"type": "audio", "seq": N, "format": "wav", "data": "<base64>"}
   {"type": "no_speech", "seq": N}         # в чанке не было речи
   {"type": "error", "seq": N|null, "message": "..."}
 """
@@ -95,52 +95,41 @@ import json
 import tempfile
 import wave
 import requests
-TTS_ENGINE = os.getenv("TTS_ENGINE", "piper").lower()
-XTTS_DEVICE = os.getenv("XTTS_DEVICE", "auto")
 
-# Безопасный импорт для разных версий huggingface_hub
-# --- ПРИНУДИТЕЛЬНЫЙ ОБХОД SSL ДЛЯ ВСЕХ ЗАПРОСОВ (обход Касперского) ---
-import urllib3
+# Точечный обход SSL только для HuggingFace (чтобы антивирус не блокировал скачивание моделей)
+from huggingface_hub import set_client_factory
+def create_client_without_ssl_verify():
+    session = requests.Session()
+    session.verify = False
+    return session
+set_client_factory(create_client_without_ssl_verify)
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# Патчим метод requests, чтобы он всегда игнорировал проверку сертификатов
-_original_request = requests.Session.request
-
-def _patched_request(self, *args, **kwargs):
-    kwargs['verify'] = False
-    return _original_request(self, *args, **kwargs)
-
-requests.Session.request = _patched_request
-# ----------------------------------------------------------------------
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, WebSocket
 
 from pipeline import TranslationPipeline
-
 from adapters.ollama_translation import OllamaTranslationAdapter
 
 log = logging.getLogger("server")
 
+TTS_ENGINE = os.getenv("TTS_ENGINE", "piper").lower()
+XTTS_DEVICE = os.getenv("XTTS_DEVICE", "auto")
+
 # ---------------------------------------------------------------- настройки
 DEFAULT_SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "16000"))
-CHUNK_SECONDS = 3.0  # Было 2.0. 
+CHUNK_SECONDS = 3.0
 MIN_SECONDS = float(os.getenv("MIN_SECONDS", "0.5"))
-MAX_QUEUE = 30  # Размер очереди: если переполнена, старые задачи отбрасываются
+MAX_QUEUE = 30
 ASR_MODEL = os.getenv("ASR_MODEL", "base")
 ASR_DEVICE = os.getenv("ASR_DEVICE", "auto")
 SAMPLE_WIDTH = 2  # PCM16 = 2 байта на сэмпл
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "translategemma:4b")
 
-# Маркер сообщения RuntimeError из pipeline.py, когда речь не найдена.
-# (Надёжнее завести в pipeline.py отдельный NoSpeechError и ловить его.)
 NO_SPEECH_MARKER = "Речь"
-
 
 # ---------------------------------------------------------------- пайплайн
 def _app_dir() -> Path:
@@ -154,6 +143,7 @@ XTTS_DEFAULT_VOICE = os.getenv("XTTS_VOICE", "reference.wav")
 def build_tts():
     if TTS_ENGINE == "xtts":
         from adapters.xtts import XTTSAdapter
+        # ОСТАВЛЕНО КАК ЕСТЬ ДЛЯ ЛИЧНОГО ТЕСТИРОВАНИЯ
         return XTTSAdapter(...)
     elif TTS_ENGINE == "f5":
         from adapters.f5_tts import F5TTSAdapter
@@ -169,30 +159,30 @@ def build_pipeline() -> TranslationPipeline:
     return TranslationPipeline(
         asr=FasterWhisperASR(model_size=ASR_MODEL, device=ASR_DEVICE),
         translator=OllamaTranslationAdapter(source="en", target="ru", model=OLLAMA_MODEL),
-        tts=build_tts(), # <--- Вот наша новая функция
+        tts=build_tts(),
     )
 
 
 def translate_pcm(pipeline: TranslationPipeline, pcm: bytes,
                   sample_rate: int, channels: int) -> tuple[bytes, str]:
     with tempfile.TemporaryDirectory(prefix="rt_translate_") as tmp:
-        wav_path = Path(tmp) / "chunk.wav"
-        mp3_path = Path(tmp) / "chunk_ru.mp3"
+        wav_in_path = Path(tmp) / "chunk.wav"
+        wav_out_path = Path(tmp) / "chunk_ru.wav" # ИСПРАВЛЕНО: было mp3_path
 
-        with wave.open(str(wav_path), "wb") as w:
+        with wave.open(str(wav_in_path), "wb") as w:
             w.setnchannels(channels)
             w.setsampwidth(SAMPLE_WIDTH)
             w.setframerate(sample_rate)
             w.writeframes(pcm)
 
         # Получаем и файл, и текст
-        _, translated_text = pipeline.run(wav_path, mp3_path)
+        _, translated_text = pipeline.run(wav_in_path, wav_out_path)
         
-        # Проверка: если файл не создался (заблокирован антивирусом или еще что-то)
-        if not mp3_path.exists():
-            return b"", translated_text  # Возвращаем пустой звук, чтобы не ломать соединение
+        # Проверка: если файл не создался
+        if not wav_out_path.exists():
+            return b"", translated_text
             
-        return mp3_path.read_bytes(), translated_text
+        return wav_out_path.read_bytes(), translated_text # ИСПРАВЛЕНО: читаем WAV
 
 
 # ---------------------------------------------------------------- буфер
@@ -233,11 +223,6 @@ class AudioBuffer:
         self._data += frames
 
     def take(self) -> bytes:
-        """Забрать всё накопленное, выровняв по границе кадра.
-
-        Хвост, не образующий целый кадр (если чанк разрезал сэмпл),
-        остаётся в буфере до следующего чанка.
-        """
         usable = len(self._data) - (len(self._data) % self.frame_bytes)
         chunk = bytes(self._data[:usable])
         del self._data[:usable]
@@ -249,13 +234,6 @@ class AudioBuffer:
 
 # ---------------------------------------------------------------- сессия
 class Session:
-    """Состояние одного WebSocket-соединения.
-
-    Приём чанков и тяжёлая обработка разделены: приём идёт в основном цикле,
-    а переводом занимается фоновый worker. Поэтому новые чанки принимаются,
-    пока предыдущий кусок ещё переводится.
-    """
-
     def __init__(self, ws: WebSocket, pipeline: TranslationPipeline,
                  executor: ThreadPoolExecutor) -> None:
         self.ws = ws
@@ -266,15 +244,13 @@ class Session:
         self.queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUE)
         self.seq = 0
         self._send_lock = asyncio.Lock()
-        self.chunk_seconds = CHUNK_SECONDS   # <--- ДОБАВИТЬ
+        self.chunk_seconds = CHUNK_SECONDS
 
-    # ---- отправка
     async def send(self, payload: dict) -> None:
-        """Отправка с блокировкой (пишут и приёмник, и worker). Не бросает."""
         async with self._send_lock:
             try:
                 await self.ws.send_json(payload)
-            except Exception as exc:  # клиент мог уже отключиться
+            except Exception as exc:
                 log.warning("Не удалось отправить клиенту: %s", exc)
 
     async def send_error(self, message: str, seq: int | None = None) -> None:
@@ -294,10 +270,8 @@ class Session:
         else:
             await self.send_error(f"Голос не найден: {voice}")
             
-    # ---- приём
     async def handle_message(self, msg: dict) -> None:
-        """Обработка одного сообщения из ws.receive()."""
-        if msg.get("bytes") is not None:            # бинарный фрейм = сырой чанк
+        if msg.get("bytes") is not None:
             await self._on_audio(msg["bytes"])
             return
 
@@ -331,7 +305,6 @@ class Session:
             except (ValueError, TypeError):
                 await self.send_error("Некорректное значение chunk_seconds")
         elif mtype in ("set-voice", "set-xtts-voice"):
-            # Обрабатываем оба типа одинаково (для Piper и XTTS/F5)
             await self._on_set_voice(data.get("voice"))
         elif mtype == "flush":
             await self._flush()
@@ -356,7 +329,7 @@ class Session:
             await self.send_error(f"Неверный config: {exc}")
             return
         self.format = fmt
-        self.buffer = AudioBuffer(rate, channels)  # новый формат — новый буфер
+        self.buffer = AudioBuffer(rate, channels)
         await self.send({"type": "info", "message": "config applied"})
 
     async def _on_audio(self, raw: bytes) -> None:
@@ -371,7 +344,6 @@ class Session:
             await self.send_error(str(exc))
             return
 
-        # Авто-flush: накопилось достаточно аудио
         if self.buffer.seconds >= self.chunk_seconds:
             await self._flush()
 
@@ -384,7 +356,6 @@ class Session:
         self.seq += 1
         job = (self.seq, pcm, self.buffer.sample_rate, self.buffer.channels)
         
-        # Если очередь забита, выкидываем старые задачи, чтобы не отставать
         if self.queue.full():
             try:
                 self.queue.get_nowait() 
@@ -395,21 +366,20 @@ class Session:
                 
         self.queue.put_nowait(job)
 
-    # ---- фоновая обработка
     async def worker(self) -> None:
         loop = asyncio.get_running_loop()
         while True:
             seq, pcm, rate, channels = await self.queue.get()
             try:
                 # Блокирующий пайплайн — в отдельном потоке
-                mp3, text = await loop.run_in_executor(
+                wav_bytes, text = await loop.run_in_executor(
                     self.executor, translate_pcm, self.pipeline, pcm, rate, channels)
-                payload = base64.b64encode(mp3).decode("ascii")
+                payload = base64.b64encode(wav_bytes).decode("ascii")
                 
-                # Отправляем и аудио, и текст
+                # ИСПРАВЛЕНО: отправляем формат 'wav' вместо 'mp3'
                 await self.send({"type": "audio", "seq": seq,
-                                 "format": "mp3", "data": payload, "text": text})
-                log.info("seq=%d готов (%d КБ mp3)", seq, len(mp3) // 1024)
+                                 "format": "wav", "data": payload, "text": text})
+                log.info("seq=%d готов (%d КБ wav)", seq, len(wav_bytes) // 1024)
             except RuntimeError as exc:
                 if NO_SPEECH_MARKER in str(exc):
                     await self.send({"type": "no_speech", "seq": seq})
@@ -426,15 +396,10 @@ class Session:
 class OllamaSetupError(RuntimeError):
     """Ollama недоступна или модель не удалось подготовить."""
 
-
 def _normalize(name: str) -> str:
-    """'qwen2.5' и 'qwen2.5:latest' - одна и та же модель."""
     return name if ":" in name else f"{name}:latest"
 
-
 def _installed_models(client: ollama.Client) -> set[str]:
-    """Имена установленных моделей. Поле называется 'model' (новые версии
-    библиотеки) или 'name' (старые), поддерживаем оба варианта."""
     resp = client.list()
     names = set()
     for m in resp["models"]:
@@ -443,12 +408,10 @@ def _installed_models(client: ollama.Client) -> set[str]:
             names.add(_normalize(name))
     return names
 
-
 def _pull_with_progress(client: ollama.Client, model: str) -> None:
-    """Скачивание модели с прогрессом в консоли (одна обновляемая строка на слой)."""
     last_status: str | None = None
     last_pct = -1
-    line_open = False  # открыта ли строка с \r, которую надо завершить переводом строки
+    line_open = False
 
     for p in client.pull(model, stream=True):
         status = p.get("status") or ""
@@ -457,7 +420,7 @@ def _pull_with_progress(client: ollama.Client, model: str) -> None:
         if total and done is not None:
             pct = int(done * 100 / total)
             if status == last_status and pct == last_pct:
-                continue  # не перерисовываем без изменений
+                continue
             sys.stdout.write(
                 f"\r{status[:24]:<24} {pct:3d}%  "
                 f"({done / 1e9:.2f} / {total / 1e9:.2f} ГБ)")
@@ -476,16 +439,8 @@ def _pull_with_progress(client: ollama.Client, model: str) -> None:
         sys.stdout.write("\n")
         sys.stdout.flush()
 
-
 def init_ollama(model: str = OLLAMA_MODEL, host: str = OLLAMA_HOST) -> None:
-    """Проверяет, что Ollama запущена и модель скачана; при необходимости скачивает.
-
-    Блокирующая функция: из async-кода вызывайте через run_in_executor.
-    Бросает OllamaSetupError с понятным сообщением при любой проблеме.
-    """
     model = _normalize(model)
-
-    # 1. Сервер Ollama запущен? Короткий таймаут, чтобы не ждать вечно.
     try:
         installed = _installed_models(ollama.Client(host=host, timeout=5))
     except (ConnectionError, httpx.ConnectError, httpx.TimeoutException):
@@ -498,12 +453,10 @@ def init_ollama(model: str = OLLAMA_MODEL, host: str = OLLAMA_HOST) -> None:
     except ollama.ResponseError as exc:
         raise OllamaSetupError(f"Ollama ответила ошибкой: {exc}") from exc
 
-    # 2. Модель уже есть?
     if model in installed:
         log.info("Ollama: модель %s уже установлена", model)
         return
 
-    # 3. Нет - скачиваем (таймаут None: загрузка может идти десятки минут)
     log.warning("Ollama: модель %s не найдена, начинаю загрузку (это может занять время)...", model)
     try:
         _pull_with_progress(ollama.Client(host=host, timeout=None), model)
@@ -514,7 +467,6 @@ def init_ollama(model: str = OLLAMA_MODEL, host: str = OLLAMA_HOST) -> None:
     except (ConnectionError, httpx.HTTPError) as exc:
         raise OllamaSetupError(f"Соединение с Ollama прервалось во время загрузки: {exc}") from exc
 
-    # 4. Контрольная проверка
     if model not in _installed_models(ollama.Client(host=host, timeout=5)):
         raise OllamaSetupError(f"Модель {model} не появилась в списке после загрузки.")
     log.info("Ollama: модель %s готова", model)
@@ -524,14 +476,12 @@ def init_ollama(model: str = OLLAMA_MODEL, host: str = OLLAMA_HOST) -> None:
 async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
 
-    # 1. Ollama: fail fast (проверка до загрузки Whisper)
     try:
         await loop.run_in_executor(None, init_ollama)
     except OllamaSetupError as exc:
         log.critical("%s", exc)
-        raise  # uvicorn завершит запуск
+        raise
 
-    # 2. Остальные модели
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pipeline")
     log.info("Загрузка моделей...")
     app.state.pipeline = await loop.run_in_executor(executor, build_pipeline)
@@ -580,7 +530,7 @@ async def ws_translate(ws: WebSocket) -> None:
                 break
             try:
                 await session.handle_message(msg)
-            except Exception as exc:  # что бы ни случилось — соединение не рвём
+            except Exception as exc: 
                 log.exception("Сбой обработки сообщения")
                 await session.send_error(f"Внутренняя ошибка: {exc}")
     except Exception:
@@ -594,6 +544,5 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
                         datefmt="%H:%M:%S")
-    # Один процесс: модель живёт в памяти, несколько воркеров загрузили бы её N раз
     uvicorn.run(app, host=os.getenv("HOST", "127.0.0.1"),
                 port=int(os.getenv("PORT", "8000")), workers=1)

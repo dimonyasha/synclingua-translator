@@ -23,7 +23,7 @@ import logging
 
 # Приветственное сообщение с донатом
 print("=" * 60)
-print("SyncLingua Server v1.0")
+print("SyncLingua Server v1.0.2")
 print("Проект работает полностью локально. Спасибо, что вы с нами!")
 print("Поддержать разработку: https://boosty.to/dimonyasha")
 print("=" * 60)
@@ -96,13 +96,8 @@ import tempfile
 import wave
 import requests
 
-# Точечный обход SSL только для HuggingFace (чтобы антивирус не блокировал скачивание моделей)
-from huggingface_hub import set_client_factory
-def create_client_without_ssl_verify():
-    session = requests.Session()
-    session.verify = False
-    return session
-set_client_factory(create_client_without_ssl_verify)
+# Отключаем проверку SSL для HuggingFace (чтобы антивирус не мешал скачиванию моделей)
+os.environ["HF_HUB_DISABLE_SSL_VERIFY"] = "1"
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -122,8 +117,8 @@ XTTS_DEVICE = os.getenv("XTTS_DEVICE", "auto")
 DEFAULT_SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "16000"))
 CHUNK_SECONDS = 3.0
 MIN_SECONDS = float(os.getenv("MIN_SECONDS", "0.5"))
-MAX_QUEUE = 30
-ASR_MODEL = os.getenv("ASR_MODEL", "base")
+MAX_QUEUE = 3
+ASR_MODEL = os.getenv("ASR_MODEL", "base.en")
 ASR_DEVICE = os.getenv("ASR_DEVICE", "auto")
 SAMPLE_WIDTH = 2  # PCM16 = 2 байта на сэмпл
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")

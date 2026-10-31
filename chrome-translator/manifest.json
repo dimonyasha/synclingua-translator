@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SyncLingua Translator",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Синхронный перевод звука вкладки с озвучкой и субтитрами.",
   "minimum_chrome_version": "116",
   "permissions": ["tabCapture", "offscreen", "activeTab", "storage"],

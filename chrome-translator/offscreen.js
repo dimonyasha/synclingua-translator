@@ -192,9 +192,9 @@ function connectWs() {
 }
 
 function sendChunk(buffer) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return; // нет связи: чанк теряем
-  if (ws.bufferedAmount > MAX_BUFFERED) return;         // сеть не успевает: тоже теряем
-  ws.send(JSON.stringify({ type: 'audio', data: bytesToBase64(new Uint8Array(buffer)) }));
+  if (!ws || ws.readyState !== WebSocket.OPEN) return; 
+  if (ws.bufferedAmount > MAX_BUFFERED) return;         
+  ws.send(buffer); // Отправляем сырые байты, сервер уже умеет их принимать!
 }
 
 // Отправляем голос на сервер, если он изменился

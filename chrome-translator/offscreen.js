@@ -11,6 +11,17 @@ const ORIGINAL_GAIN = 1.0;     // сюда позже добавим пригл�
 const TRANSLATION_GAIN = 1.0;
 const MAX_BUFFERED = 1_000_000; // если сокет «забит» больше 1 МБ, чанки отбрасываем
 
+// --- НОВЫЕ КОНСТАНТЫ ДЛЯ ПЛАВНОГО ВОСПРОИЗВЕДЕНИЯ ---
+const LEAD = 0.08;            // Запас перед стартом первого куска (сек)
+const PAUSE = 0.06;           // Естественная пауза между кусками
+const FADE = 0.015;           // Плавное появление/затухание (против щелчков)
+const SILENCE_THR = 0.01;     // Порог для обрезки тишины по краям
+const CATCHUP_FROM = 1.5;     // С какого отставания (сек) начинаем ускорять
+const MAX_RATE = 1.25;        // Максимальное ускорение (1.25 = на 25% быстрее)
+const MAX_BACKLOG = 8.0;      // Если отстали на 8 сек — сбрасываем очередь
+const DUCK_LEVEL = 0.15;      // Приглушение оригинала (15% от текущей громкости)
+const DUCK_RELEASE_MS = 350;  // Задержка перед возвратом звука (чтобы не «качало»)
+
 let ctx = null;
 let stream = null;
 let workletNode = null;
@@ -61,10 +72,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         currentTransVol = msg.transVol;
         currentOrigVol = msg.origVol;
         
-        // Используем setTargetAtTime для плавного применения, чтобы не было щелчков
-        if (originalGain) {
-            originalGain.gain.setTargetAtTime(currentOrigVol, ctx.currentTime, 0.05);
-        }
+        applyOriginalGain(); // Применяем громкость с учетом ducking
         if (translationGain) {
             translationGain.gain.setTargetAtTime(currentTransVol, ctx.currentTime, 0.05);
         }
@@ -142,6 +150,11 @@ async function startCapture(streamId) {
 async function stopCapture() {
   active = false;
   clearTimeout(reconnectTimer);
+    // --- НОВОЕ ---
+  clearTimeout(duckTimer);
+  scheduled.clear();
+  ducked = false;
+  // ------------
   serverEngine = serverVoice = null;
   if (ws) {
     ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
@@ -245,38 +258,133 @@ function handleServerMessage(raw) {
 
 // ------------------------------------------------------------ воспроизведение
 // --- НОВАЯ ФУНКЦИЯ ДЛЯ ПРИГЛУШЕНИЯ ---
-function duckOriginal(isDucked) {
+let scheduled = new Set();
+let ducked = false;
+let duckTimer = null;
+
+function applyOriginalGain() {
   if (!originalGain || !ctx) return;
-  // Приглушаем до 15% ОТ ТЕКУЩЕЙ громкости ползунка, а не от 100%
-  const targetVolume = isDucked ? (currentOrigVol * 0.15) : currentOrigVol; 
-  originalGain.gain.setTargetAtTime(targetVolume, ctx.currentTime, 0.1);
+  const target = currentOrigVol * (ducked ? DUCK_LEVEL : 1);
+  originalGain.gain.setTargetAtTime(target, ctx.currentTime, 0.1);
+}
+
+function setDuck(on) {
+  clearTimeout(duckTimer);
+  if (on) {
+    ducked = true;
+    applyOriginalGain();
+  } else {
+    duckTimer = setTimeout(() => {
+      ducked = false;
+      applyOriginalGain();
+    }, DUCK_RELEASE_MS);
+  }
+}
+
+function trimSilence(buf) {
+  const d = buf.getChannelData(0);
+  const sampleRate = buf.sampleRate;
+  const SILENCE_THR = 0.01; // Порог тишины
+  const MIN_PAUSE = 0.3;    // Вырезаем паузы дольше 300 мс
+  
+  const minPauseSamples = MIN_PAUSE * sampleRate;
+  const pad = Math.round(0.02 * sampleRate);
+
+  // 1. Находим границы речи (начало и конец)
+  let a = 0, b = d.length - 1;
+  while (a < b && Math.abs(d[a]) < SILENCE_THR) a++;
+  while (b > a && Math.abs(d[b]) < SILENCE_THR) b--;
+  a = Math.max(0, a - pad);
+  b = Math.min(d.length - 1, b + pad);
+
+  // 2. Ищем длинные паузы внутри и склеиваем речь
+  const newLength = b - a + 1;
+  const out = new Float32Array(newLength);
+  let outIdx = 0;
+  let silenceCount = 0;
+  let inSpeech = false;
+
+  for (let i = a; i <= b; i++) {
+    const isSilent = Math.abs(d[i]) < SILENCE_THR;
+
+    if (isSilent) {
+      silenceCount++;
+      // Если пауза превысила лимит, не копируем её (вырезаем)
+      if (silenceCount > minPauseSamples) {
+        inSpeech = false;
+        continue; 
+      }
+    } else {
+      silenceCount = 0;
+      inSpeech = true;
+    }
+    
+    out[outIdx++] = d[i];
+  }
+
+  // Создаем новый буфер
+  const result = ctx.createBuffer(1, outIdx, sampleRate);
+  result.getChannelData(0).set(out.subarray(0, outIdx));
+
+  return { buffer: result, offset: 0, duration: result.duration };
+}
+
+function dropScheduled() {
+  for (const s of scheduled) { try { s.stop(); } catch {} }
+  scheduled.clear();
+  nextPlayTime = 0;
 }
 
 async function playMp3(b64, seq) {
   if (!ctx || !active) return;
+  let audioBuffer;
   try {
-    const audioBuffer = await ctx.decodeAudioData(base64ToBytes(b64).buffer);
-    const src = ctx.createBufferSource();
-    src.buffer = audioBuffer;
-    src.connect(translationGain);
-
-    // Включаем приглушение
-    duckOriginal(true);
-
-    // Возвращаем звук после окончания
-    src.onended = () => {
-      if (nextPlayTime - ctx.currentTime < 0.1) {
-        duckOriginal(false);
-      }
-    };
-
-    const startAt = Math.max(ctx.currentTime + 0.05, nextPlayTime);
-    src.start(startAt);
-    nextPlayTime = startAt + audioBuffer.duration;
+    audioBuffer = await ctx.decodeAudioData(base64ToBytes(b64).buffer);
   } catch (err) {
-    console.error(`[offscreen] не удалось воспроизвести seq=${seq}`, err);
-    duckOriginal(false);
+    console.error(`[offscreen] decode seq=${seq}`, err);
+    return;
   }
+  if (!ctx || !active) return; 
+
+  const now = ctx.currentTime;
+  let backlog = Math.max(0, nextPlayTime - now);
+
+  // Если отстали слишком сильно, сбрасываем накопленное
+  if (backlog > MAX_BACKLOG) {
+    dropScheduled();
+    backlog = 0;
+  }
+
+  // Плавное ускорение при отставании
+  const rate = 1.0; // Всегда играем с нормальной скоростью, никакого ускорения
+  const { buffer: trimmedBuffer, offset, duration } = trimSilence(audioBuffer);
+  const realDur = duration / rate;
+
+  const src = ctx.createBufferSource();
+  src.buffer = trimmedBuffer; // используем обрезанный буфер
+  src.playbackRate.value = rate; 
+
+  const env = ctx.createGain(); // Огибающая для фейдов
+  src.connect(env).connect(translationGain);
+
+  const startAt = backlog > 0 ? nextPlayTime + PAUSE : now + LEAD;
+
+  // Настраиваем плавное появление и затухание
+  env.gain.setValueAtTime(0, startAt);
+  env.gain.linearRampToValueAtTime(1, startAt + FADE);
+  env.gain.setValueAtTime(1, Math.max(startAt + FADE, startAt + realDur - FADE));
+  env.gain.linearRampToValueAtTime(0, startAt + realDur);
+
+  scheduled.add(src);
+  setDuck(true); // Приглушаем оригинал
+  
+  src.onended = () => {
+    scheduled.delete(src);
+    if (scheduled.size === 0) setDuck(false); // Возвращаем звук, только когда всё доиграло
+  };
+
+  src.start(startAt, offset, duration);
+  nextPlayTime = startAt + realDur;
 }
 
 // ------------------------------------------------------------ base64

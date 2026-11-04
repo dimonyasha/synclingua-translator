@@ -118,7 +118,7 @@ DEFAULT_SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "16000"))
 CHUNK_SECONDS = 3.0
 MIN_SECONDS = float(os.getenv("MIN_SECONDS", "0.5"))
 MAX_QUEUE = 3
-ASR_MODEL = os.getenv("ASR_MODEL", "base.en")
+ASR_MODEL = os.getenv("ASR_MODEL", "small")
 ASR_DEVICE = os.getenv("ASR_DEVICE", "auto")
 SAMPLE_WIDTH = 2  # PCM16 = 2 байта на сэмпл
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")

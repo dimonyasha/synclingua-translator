@@ -10,7 +10,7 @@ PyInstaller.__main__.run([
     '--clean',
     
     # Добавляем папки с моделями Argos
-    '--add-data=argos_models;argos_models',
+    #'--add-data=argos_models;argos_models',
     
     # Явно копируем espeak-ng-data внутрь папки piper
     '--add-data=.venv_piper/Lib/site-packages/piper/espeak-ng-data;piper/espeak-ng-data',

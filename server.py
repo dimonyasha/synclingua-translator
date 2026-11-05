@@ -17,13 +17,16 @@
   {"type": "no_speech", "seq": N}         # в чанке не было речи
   {"type": "error", "seq": N|null, "message": "..."}
 """
+import time
+from urllib.parse import urlparse
+from adapters.openai_translation import OpenAITranslationAdapter, TranslationError
 import os
 import sys
 import logging
 
 # Приветственное сообщение с донатом
 print("=" * 60)
-print("SyncLingua Server v1.0.2")
+print("SyncLingua Server v1.1.0")
 print("Проект работает полностью локально. Спасибо, что вы с нами!")
 print("Поддержать разработку: https://boosty.to/dimonyasha")
 print("=" * 60)
@@ -148,14 +151,12 @@ def build_tts():
         return EdgeTTSAdapter(voice_type="male_1")
     raise ValueError(f"Неизвестный TTS_ENGINE={TTS_ENGINE!r}")
 
-def build_pipeline() -> TranslationPipeline:
-    from adapters import FasterWhisperASR, OllamaTranslationAdapter
-
-    return TranslationPipeline(
-        asr=FasterWhisperASR(model_size=ASR_MODEL, device=ASR_DEVICE),
-        translator=OllamaTranslationAdapter(source="en", target="ru", model=OLLAMA_MODEL),
-        tts=build_tts(),
-    )
+def build_shared_models():
+    from adapters import FasterWhisperASR
+    # Загружаем только тяжелые модели (ASR и TTS), которые можно шарить
+    asr = FasterWhisperASR(model_size=ASR_MODEL, device=ASR_DEVICE)
+    tts = build_tts()
+    return asr, tts
 
 
 def translate_pcm(pipeline: TranslationPipeline, pcm: bytes,
@@ -231,6 +232,7 @@ class AudioBuffer:
 class Session:
     def __init__(self, ws: WebSocket, pipeline: TranslationPipeline,
                  executor: ThreadPoolExecutor) -> None:
+        self._tr_disabled = False        
         self.ws = ws
         self.pipeline = pipeline
         self.executor = executor
@@ -264,6 +266,46 @@ class Session:
             await self.send({"type": "voice_changed", "voice": tts.current_voice})
         else:
             await self.send_error(f"Голос не найден: {voice}")
+    
+    async def _on_set_translation(self, data: dict) -> None:
+        verify_ssl = data.get("verify_ssl", True) # По умолчанию True
+        try:
+            mode = data.get("mode", "local")
+            old_translator = self.pipeline._translator
+            self._tr_disabled = False # Сбрасываем блокировку при смене настроек
+
+            if mode == "cloud":
+                base_url = data.get("base_url", "").strip()
+                api_key = data.get("api_key", "").strip()
+                model = data.get("model", "").strip()
+                
+                if not api_key or not model or not base_url:
+                    raise ValueError("Для облака укажите URL, ключ и модель")
+                
+                # БЕЗОПАСНАЯ ПРОВЕРКА URL
+                u = urlparse(base_url)
+                is_local = u.hostname in ("127.0.0.1", "localhost", "::1")
+                if not (u.scheme == "https" or (u.scheme == "http" and is_local)):
+                    raise ValueError("Для облака нужен https:// (безопасное соединение)")
+                
+                self.pipeline._translator = OpenAITranslationAdapter(
+                    source="en", target="ru", model=model, base_url=base_url, api_key=api_key,
+                    verify_ssl=verify_ssl # <-- Передаем
+                )
+                log.info("Режим: ОБЛАКО. Модель=%s, URL=%s", model, base_url)
+            else:
+                self.pipeline._translator = OpenAITranslationAdapter(
+                    source="en", target="ru", model=OLLAMA_MODEL, 
+                    base_url="http://127.0.0.1:11434/v1", api_key="ollama"
+                )
+                log.info("Режим: ЛОКАЛЬНО. Модель=%s, URL=http://127.0.0.1:11434/v1", OLLAMA_MODEL)
+            
+            if hasattr(old_translator, "close"):
+                old_translator.close()
+                
+            await self.send({"type": "info", "message": "Настройки перевода применены"})
+        except Exception as e:
+            await self.send_error(f"Ошибка смены перевода: {e}")
             
     async def handle_message(self, msg: dict) -> None:
         if msg.get("bytes") is not None:
@@ -308,6 +350,8 @@ class Session:
             await self.send({"type": "info", "message": "buffer reset"})
         elif mtype == "config":
             await self._on_config(data)
+        elif mtype == "set-translation":     # <--- ДОБАВИТЬ ВОТ ЭТИ ДВЕ СТРОКИ
+            await self._on_set_translation(data)
         else:
             await self.send_error(f"Неизвестный тип сообщения: {mtype!r}")
 
@@ -363,24 +407,37 @@ class Session:
 
     async def worker(self) -> None:
         loop = asyncio.get_running_loop()
+        last_error = None
+        last_error_time = 0.0
+        
         while True:
             seq, pcm, rate, channels = await self.queue.get()
             try:
-                # Блокирующий пайплайн — в отдельном потоке
+                if self._tr_disabled:
+                    continue # Пропускаем, если был фатальный сбой (например, 401)
+                    
                 wav_bytes, text = await loop.run_in_executor(
                     self.executor, translate_pcm, self.pipeline, pcm, rate, channels)
                 payload = base64.b64encode(wav_bytes).decode("ascii")
-                
-                # ИСПРАВЛЕНО: отправляем формат 'wav' вместо 'mp3'
-                await self.send({"type": "audio", "seq": seq,
-                                 "format": "wav", "data": payload, "text": text})
-                log.info("seq=%d готов (%d КБ wav)", seq, len(wav_bytes) // 1024)
+                await self.send({"type": "audio", "seq": seq, "format": "wav", "data": payload, "text": text})
             except RuntimeError as exc:
                 if NO_SPEECH_MARKER in str(exc):
                     await self.send({"type": "no_speech", "seq": seq})
                 else:
-                    log.exception("Ошибка пайплайна")
                     await self.send_error(f"Ошибка обработки: {exc}", seq)
+            except TranslationError as exc:
+                log.warning("Ошибка перевода: %s", exc)
+                if exc.fatal:
+                    self._tr_disabled = True
+                    await self.send({"type": "error", "seq": seq, "message": str(exc), "fatal": True})
+                else:
+                    now = time.monotonic()
+                    if str(exc) != last_error or (now - last_error_time) > 15:
+                        last_error = str(exc)
+                        last_error_time = now
+                        await self.send({"type": "error", "seq": seq, "message": str(exc), "fatal": False})
+                    else:
+                        await self.send({"type": "no_speech", "seq": seq})
             except Exception as exc:
                 log.exception("Ошибка пайплайна")
                 await self.send_error(f"Ошибка обработки: {exc}", seq)
@@ -471,26 +528,26 @@ def init_ollama(model: str = OLLAMA_MODEL, host: str = OLLAMA_HOST) -> None:
 async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
 
+    # Делаем проверку Ollama НЕОБЯЗАТЕЛЬНОЙ
     try:
         await loop.run_in_executor(None, init_ollama)
     except OllamaSetupError as exc:
-        log.critical("%s", exc)
-        raise
+        log.warning("Ollama не запущена (это нормально, если вы используете облачный режим).")
+        log.warning("Детали: %s", exc)
 
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pipeline")
     log.info("Загрузка моделей...")
-    app.state.pipeline = await loop.run_in_executor(executor, build_pipeline)
+    app.state.asr, app.state.tts = await loop.run_in_executor(executor, build_shared_models)
     app.state.executor = executor
     log.info("Сервер готов")
     yield
     executor.shutdown(wait=False, cancel_futures=True)
 
-def voices_info(pipeline: TranslationPipeline) -> dict:
-    tts = getattr(pipeline, "_tts", None)
-    if TTS_ENGINE == "xtts" and hasattr(tts, "list_voices"):
-        return {"engine": "xtts", "voices": tts.list_voices(), "voice": tts.current_voice}
-    elif TTS_ENGINE == "f5" and hasattr(tts, "list_voices"):
-        return {"engine": "f5", "voices": tts.list_voices(), "voice": tts.current_voice}
+def voices_info(tts_adapter) -> dict:
+    if TTS_ENGINE == "xtts" and hasattr(tts_adapter, "list_voices"):
+        return {"engine": "xtts", "voices": tts_adapter.list_voices(), "voice": tts_adapter.current_voice}
+    elif TTS_ENGINE == "f5" and hasattr(tts_adapter, "list_voices"):
+        return {"engine": "f5", "voices": tts_adapter.list_voices(), "voice": tts_adapter.current_voice}
     return {"engine": TTS_ENGINE, "voices": [], "voice": None}
     
 app = FastAPI(title="Realtime audio translator", lifespan=lifespan)
@@ -502,12 +559,22 @@ async def health() -> dict:
 
 @app.get("/voices")
 async def get_voices() -> dict:
-    return voices_info(app.state.pipeline)
+    return voices_info(app.state.tts)
 
 @app.websocket("/ws/translate")
 async def ws_translate(ws: WebSocket) -> None:
     await ws.accept()
-    session = Session(ws, app.state.pipeline, app.state.executor)
+    
+    # ИЗОЛИРОВАННЫЙ ПЕРЕВОДЧИК ДЛЯ КАЖДОЙ СЕССИИ
+    local_translator = OpenAITranslationAdapter(
+        source="en", target="ru", model=OLLAMA_MODEL, 
+        base_url="http://127.0.0.1:11434/v1", api_key="ollama"
+    )
+    session_pipeline = TranslationPipeline(
+        asr=app.state.asr, translator=local_translator, tts=app.state.tts
+    )
+    
+    session = Session(ws, session_pipeline, app.state.executor)
     worker = asyncio.create_task(session.worker())
     log.info("Клиент подключён: %s", ws.client)
 
@@ -515,7 +582,7 @@ async def ws_translate(ws: WebSocket) -> None:
         "type": "ready", "format": session.format,
         "sample_rate": session.buffer.sample_rate,
         "channels": session.buffer.channels, "chunk_seconds": session.chunk_seconds,
-        **voices_info(app.state.pipeline),
+        **voices_info(session_pipeline._tts)
     })
 
     try:

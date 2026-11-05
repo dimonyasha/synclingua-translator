@@ -50,14 +50,37 @@ async function sendToOffscreen(message, attempts = 5) {
 async function startTranslation({ tabId, streamId }) {
   if ((await getState()).active) await stopTranslation();
   await setState({ active: true, status: 'starting', detail: '', tabId });
+  
   try {
     await ensureOffscreen();
-    const { xttsVoice, voice, chunkSeconds } = await chrome.storage.local.get(['xttsVoice', 'voice', 'chunkSeconds']);
+    const s = await chrome.storage.local.get([
+      'xttsVoice', 'voice', 'chunkSeconds', 
+      'transMode', 'cloudUrl', 'cloudKey', 'cloudModel', 'cloudVerifySsl'
+    ]);
+    
+    let translation;
+    if (s.transMode === 'cloud') {
+      // ТРЕБУЕМ ВСЕ ТРИ ПОЛЯ
+      if (!s.cloudUrl || !s.cloudKey || !s.cloudModel) {
+        throw new Error('Для облака укажите URL, ключ и модель в настройках.');
+      }
+      translation = {
+        mode: 'cloud',
+        base_url: s.cloudUrl,
+        api_key: s.cloudKey,
+        model: s.cloudModel,
+        verify_ssl: s.cloudVerifySsl ?? true // <-- Передаем флаг
+      };
+    } else {
+      translation = { mode: 'local' };
+    }
+    
     const res = await sendToOffscreen({ 
       type: 'start-capture', 
       streamId, 
-      voice: xttsVoice ?? voice ?? null,
-      chunkSeconds: chunkSeconds ?? 4.0
+      voice: s.xttsVoice ?? s.voice ?? null,
+      chunkSeconds: s.chunkSeconds ?? 4.0,
+      translation: translation
     });
     if (!res?.ok) throw new Error(res?.error || 'Offscreen-документ не запустил захват');
     return { ok: true };
@@ -90,7 +113,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case 'capture-ended': 
         await stopTranslation();
         return { ok: true };
-      case 'status': 
+      case 'fatal-error':
+        await stopTranslation();
+        await setState({ status: 'error', detail: msg.detail });
+        return { ok: true };      
+	  case 'status': 
         if ((await getState()).active) {
           await setState({ status: msg.status, detail: msg.detail ?? '' });
         }

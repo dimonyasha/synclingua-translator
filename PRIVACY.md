@@ -1,21 +1,25 @@
-# SyncLingua Privacy Policy
+# Политика конфиденциальности SyncLingua
 
-**Last updated: October 27, 2026**
+**Последнее обновление: 6 ноября 2026 г.**
 
-SyncLingua is a Chrome extension designed for real-time audio translation. We take your privacy extremely seriously.
+SyncLingua создан с приоритетом вашей приватности. Мы не собираем телеметрию, не показываем рекламу и не передаем ваши данные третьим лицам без вашего ведома.
 
-## 1. Data Collection and Usage
-SyncLingua **does not collect, store, or transmit any personal data** to external servers. 
+Начиная с версии 1.1.0, проект поддерживает два режима перевода. Важно понимать разницу:
 
-When you use the extension, the audio from the active tab is captured and sent **only to your local computer** (specifically, to the local server running at `http://127.0.0.1:8000`). 
+### 1. Локальный режим (По умолчанию)
+*   **Аудио:** Захватывается локально и не покидает ваш компьютер.
+*   **Распознавание:** Выполняется локально (Whisper).
+*   **Перевод:** Выполняется локально (Ollama).
+*   **Синтез речи:** Выполняется локально (Piper).
+*   **Приватность:** 100%. Ни один байт ваших данных не уходит в интернет.
 
-## 2. Local Processing
-All audio processing, speech recognition (Whisper), translation (Ollama), and voice synthesis (Piper) are performed **locally on your machine**. No audio data, text, or personal information ever leaves your computer.
+### 2. Облачный режим (Опционально)
+Если вы явно выбрали облачный режим (например, GigaChat или OpenRouter) в настройках расширения:
+*   **Аудио:** По-прежнему распознается **локально** на вашем ПК.
+*   **Текст:** Распознанный текст отправляется на указанный вами сервер API для перевода.
+*   **Ответственность:** В этом режиме обработка текста регулируется правилами конфиденциальности выбранного вами провайдера (например, Сбера).
 
-## 3. Permissions
-- `tabCapture`: Required to capture the audio of the active tab for translation.
-- `offscreen`: Required to process audio in the background and play the translated audio.
-- `storage`: Required to save your settings (volume, voice choice, subtitle size) locally in your browser.
+### Безопасность ключей
+Все API-ключи хранятся локально в вашем браузере (Chrome Storage) и отправляются только на тот сервер, который вы указали.
 
-## 4. Contact
-If you have any questions about this privacy policy, please open an issue on our GitHub repository.
+**Разработчик SyncLingua не имеет доступа к вашим ключам и вашему трафику.**

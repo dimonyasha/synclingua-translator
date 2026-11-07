@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SyncLingua — Локальный синхронный переводчик</title>
+    <meta name="description" content="Бесплатный переводчик видео EN→RU с озвучкой и субтитрами. Работает локально и безопасно.">
+    <style>
+        :root {
+            --bg: #121217;
+            --panel: #1e1e24;
+            --text: #ffffff;
+            --text-muted: #aaaaaa;
+            --primary: #5c6bc0;
+            --primary-hover: #7986cb;
+            --danger: #ef5350;
+        }
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 0;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 50px;
+        }
+        h1 {
+            font-size: 3em;
+            margin-bottom: 10px;
+            background: linear-gradient(90deg, #fff, #7986cb);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .subtitle {
+            font-size: 1.2em;
+            color: var(--text-muted);
+            margin-bottom: 30px;
+        }
+        .btn {
+            display: inline-block;
+            background-color: var(--primary);
+            color: #fff;
+            text-decoration: none;
+            padding: 15px 40px;
+            font-size: 1.2em;
+            font-weight: bold;
+            border-radius: 8px;
+            transition: background 0.3s, transform 0.1s;
+            box-shadow: 0 4px 15px rgba(92, 107, 192, 0.4);
+        }
+        .btn:hover {
+            background-color: var(--primary-hover);
+            transform: translateY(-2px);
+        }
+        .btn-donate {
+            background-color: transparent;
+            border: 2px solid var(--danger);
+            color: var(--danger);
+            box-shadow: none;
+            font-size: 1em;
+            padding: 10px 20px;
+            margin-top: 20px;
+        }
+        .btn-donate:hover {
+            background-color: rgba(239, 83, 80, 0.1);
+        }
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 50px;
+        }
+        .feature-card {
+            background-color: var(--panel);
+            padding: 25px;
+            border-radius: 12px;
+            border: 1px solid #333;
+        }
+        .feature-card h3 {
+            margin-top: 0;
+            color: var(--primary);
+        }
+        .steps {
+            background-color: var(--panel);
+            padding: 30px;
+            border-radius: 12px;
+            margin-bottom: 50px;
+        }
+        .steps ol {
+            padding-left: 20px;
+        }
+        .steps li {
+            margin-bottom: 15px;
+        }
+        .screenshots img {
+            width: 100%;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            border: 1px solid #333;
+        }
+        footer {
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.9em;
+            border-top: 1px solid #333;
+            padding-top: 20px;
+        }
+        footer a {
+            color: var(--primary);
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>SyncLingua</h1>
+            <p class="subtitle">Синхронный переводчик видео EN→RU с озвучкой и субтитрами.<br>100% локально, безопасно и бесплатно.</p>
+            <a href="https://github.com/dimonyasha/synclingua-translator/releases/latest" class="btn">Скачать для Windows</a><br>
+            <a href="https://boosty.to/dimonyasha" class="btn btn-donate" target="_blank">Поддержать проект ❤️</a>
+        </header>
+
+        <div class="features">
+            <div class="feature-card">
+                <h3>🔒 Абсолютная приватность</h3>
+                <p>По умолчанию всё работает на вашем ПК. Ваш звук не уходит в облака и не передается третьим лицам.</p>
+            </div>
+            <div class="feature-card">
+                <h3>☁️ Гибридный режим</h3>
+                <p>Слабый компьютер? Переключитесь на облачный перевод (например, GigaChat). В сеть уйдет только текст, аудио останется у вас.</p>
+            </div>
+            <div class="feature-card">
+                <h3>🎙️ Голосовая озвучка</h3>
+                <p>Не просто читайте субтитры. Слушайте видео на русском языке с помощью качественного синтеза речи (Piper TTS).</p>
+            </div>
+            <div class="feature-card">
+                <h3>🌍 Любые сайты</h3>
+                <p>Работает на YouTube, Twitch, Coursera, Udemy и любых других сайтах, где есть видеоплеер.</p>
+            </div>
+        </div>
+
+        <div class="steps">
+            <h2>Как установить?</h2>
+            <ol>
+                <li><b>Скачайте установщик</b> по кнопке выше и запустите его.</li>
+                <li><b>Запустите ярлык</b> «SyncLingua Server» на рабочем столе (дождитесь загрузки моделей).</li>
+                <li><b>Установите расширение</b> в Chrome (инструкция с картинками внутри установщика, в файле README).</li>
+                <li>Откройте видео и нажмите <b>«Включить перевод»</b>!</li>
+            </ol>
+            <p><i>* Если вы хотите использовать локальный режим без интернета, вам потребуется установить <a href="https://ollama.com/download" target="_blank" style="color:var(--primary)">Ollama</a>.</i></p>
+        </div>
+
+        <div class="screenshots">
+            <img src="screen_youtube.png" alt="Работа на YouTube">
+            <img src="screen_popup.png" alt="Настройки расширения">
+        </div>
+
+        <footer>
+            <p>Проект с открытым исходным кодом (MIT). <br>
+            <a href="https://github.com/dimonyasha/synclingua-translator">GitHub</a> • 
+            <a href="https://github.com/dimonyasha/synclingua-translator/blob/main/PRIVACY.md">Политика конфиденциальности</a></p>
+        </footer>
+    </div>
+</body>
+</html>

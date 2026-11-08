@@ -3,8 +3,42 @@ import re
 import requests
 import urllib3
 import uuid
+import os
 from .base import TranslationAdapter
+import certifi
+import sys
+from pathlib import Path
 
+def _get_sber_ca_bundle() -> str:
+    """Создает объединенный файл сертификатов (стандартные + Минцифры)."""
+    # Ищем папку с сертификатами (учитывая сборку в .exe)
+    if getattr(sys, 'frozen', False):
+        base = Path(sys._MEIPASS)
+    else:
+        base = Path(__file__).resolve().parent.parent
+
+    sber_cert_path = base / "certs" / "russian_trusted_root_ca.pem"
+    
+    # Если файла нет (например, забыли добавить при сборке), используем стандартные
+    if not sber_cert_path.exists():
+        log.warning("Сертификат Минцифры не найден! Используем стандартный certifi.")
+        return certifi.where()
+
+    # Безопасная папка в ProgramData (чтобы избежать проблем с кириллицей в путях)
+    safe_dir = Path(os.environ.get("PROGRAMDATA", "C:\\ProgramData")) / "SyncLingua"
+    safe_dir.mkdir(parents=True, exist_ok=True)
+    out_path = safe_dir / "ca-sber-bundle.pem"
+
+    # Склеиваем стандартные сертификаты и сертификат Сбера
+    try:
+        certifi_data = Path(certifi.where()).read_bytes()
+        sber_data = sber_cert_path.read_bytes()
+        out_path.write_bytes(certifi_data + b"\n" + sber_data)
+        return str(out_path)
+    except Exception as e:
+        log.error("Ошибка создания SSL-бандла: %s", e)
+        return certifi.where()
+        
 # Отключаем предупреждения об отключенном SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -36,7 +70,12 @@ class OpenAITranslationAdapter(TranslationAdapter):
         self._giga_token = None
 
         self._session = requests.Session()
-        self._session.verify = verify_ssl
+        
+        # Если это GigaChat и включена проверка SSL, используем наш кастомный бандл
+        if self._is_gigachat and verify_ssl:
+            self._session.verify = _get_sber_ca_bundle()
+        else:
+            self._session.verify = verify_ssl
 
         log.info("Перевод: модель=%s, url=%s, ssl_verify=%s", model, base, verify_ssl)
 
@@ -73,7 +112,8 @@ class OpenAITranslationAdapter(TranslationAdapter):
             "Ты профессиональный синхронный переводчик. Твоя единственная задача — "
             "переводить текст с английского на русский язык. Выводи ТОЛЬКО переведенный "
             "текст на русском. Запрещено выводить твои мысли, объяснения, комментарии, "
-            "английские или китайские символы."
+            "английские или китайские символы. "
+            "При переводе обращений используй форму 'ты', если в оригинале используется 'you' в единственном числе, и форму 'вы', если речь идёт о группе людей или официальном обращении. Не используй излишне формальное 'Вы' без необходимости."
         )
         payload = {
             "model": self._model,

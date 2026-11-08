@@ -14,6 +14,8 @@ PyInstaller.__main__.run([
     
     # Явно копируем espeak-ng-data внутрь папки piper
     '--add-data=.venv_piper/Lib/site-packages/piper/espeak-ng-data;piper/espeak-ng-data',
+        # Добавляем сертификаты Минцифры для GigaChat
+    '--add-data=certs;certs',
     
     # Собираем все данные для Piper
     '--collect-all=piper',

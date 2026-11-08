@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "SyncLingua Translator",
+  "version": "1.1.1",
+  "description": "Синхронный перевод звука вкладки с озвучкой и субтитрами.",
+  "minimum_chrome_version": "116",
+  "permissions": ["tabCapture", "offscreen", "activeTab", "storage"],
+  "host_permissions": [
+    "http://127.0.0.1:8000/*",
+    "ws://127.0.0.1:8000/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_title": "SyncLingua Translator",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon192.png",
+      "128": "icon192.png"
+    }
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon192.png",
+    "128": "icon192.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.youtube.com/*",
+        "*://*.twitch.tv/*",
+        "*://*.vimeo.com/*",
+        "*://*.coursera.org/*",
+        "*://*.udemy.com/*",
+        "*://meet.google.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

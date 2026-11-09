@@ -32,7 +32,15 @@
         "*://*.vimeo.com/*",
         "*://*.coursera.org/*",
         "*://*.udemy.com/*",
-        "*://meet.google.com/*"
+        "*://meet.google.com/*",
+        "*://*.rutube.ru/*",
+        "*://*.dailymotion.com/*",
+        "*://*.ted.com/*",
+        "*://*.zoom.us/*",
+        "*://*.kick.com/*",
+        "*://*.bilibili.com/*",
+        "*://*.netflix.com/*",
+        "*://*.primevideo.com/*"
       ],
       "js": ["content.js"],
       "run_at": "document_idle"

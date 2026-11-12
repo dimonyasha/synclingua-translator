@@ -6,12 +6,18 @@ from .base import ASRAdapter, Segment
 
 log = logging.getLogger(__name__)
 
-# Фразы-галлюцинации Whisper на тишине/музыке. Только длинные, чтобы не резать
-# настоящую речь вроде "Thank you." (её отсеет фильтр по метрикам).
+# Фразы-галлюцинации Whisper на тишине/музыке
 _HALLUCINATIONS = (
     "thanks for watching", "thank you for watching", "please subscribe",
     "subscribe to", "subtitles by", "amara org",
 )
+
+# Типичные междометия и мусор, которые Whisper путает с речью
+_FILLERS = {
+    "ara", "aha", "oh", "ah", "uh", "um", "yeah", "you", "the", "a", "an", 
+    "and", "but", "so", "to", "it", "is", "of", "in", "on", "at", "by", 
+    "my", "me", "we", "us", "he", "she", "ohh", "ahh"
+}
 
 def _norm(text: str) -> str:
     return re.sub(r"[^\w\s]", " ", text.lower()).strip()
@@ -21,7 +27,12 @@ def _is_hallucination(text: str) -> bool:
     if any(p in t for p in _HALLUCINATIONS):
         return True
     words = t.split()
-    # "Thank you. Thank you. Thank you." и подобные зацикливания
+    
+    # Если вся фраза состоит из одного слова, и это слово - междометие из списка
+    if len(words) == 1 and words[0] in _FILLERS:
+        return True
+        
+    # Зацикливания: "Thank you. Thank you. Thank you."
     return len(words) >= 3 and len(set(words)) <= max(1, len(words) // 3)
 
 def _cuda_available() -> bool:
@@ -32,7 +43,7 @@ def _cuda_available() -> bool:
         return False
 
 class FasterWhisperASR(ASRAdapter):
-    LANG_CONFIDENCE = 0.6   # выше этого уверенно считаем, что язык не наш
+    LANG_CONFIDENCE = 0.6
 
     def __init__(self, model_size: str = "small", device: str = "auto", language: str = "en") -> None:
         if device == "auto":
@@ -49,20 +60,13 @@ class FasterWhisperASR(ASRAdapter):
             language=language,
             beam_size=5,
             vad_filter=True,
-            # СМЯГЧАЕМ ПАРАМЕТРЫ VAD:
-            vad_parameters=dict(
-                threshold=0.4,                  # Было 0.6. Снижаем, чтобы ловить тихую речь
-                min_speech_duration_ms=100,     # Было 250. Снижаем, чтобы ловить короткие слова
-                min_silence_duration_ms=500     # Пауза 0.5 сек для завершения фразы
-            ),
+            vad_parameters=dict(threshold=0.5, min_speech_duration_ms=250), # Чуть более чувствительный VAD
             condition_on_previous_text=False,
         )
 
     def transcribe(self, audio_path: Path) -> list[Segment]:
-        # Язык определяется сразу при вызове, до декодирования текста
         segments_iter, info = self._run(audio_path, language=None)
 
-        # Если VAD вырезал ВСЁ аудио (чистая тишина/шум) — сразу выходим!
         if info.duration_after_vad == 0:
             return []
 
@@ -70,7 +74,6 @@ class FasterWhisperASR(ASRAdapter):
             if info.language_probability >= self.LANG_CONFIDENCE:
                 log.info("Язык '%s' (%.2f) — пропуск", info.language, info.language_probability)
                 return []
-            # Не уверены (шум, короткий кусок) — считаем, что это английский
             segments_iter, info = self._run(audio_path, language=self._language)
 
         result = []
@@ -82,8 +85,17 @@ class FasterWhisperASR(ASRAdapter):
                 continue
             if s.avg_logprob < -1.2 or s.compression_ratio > 2.4:
                 continue
+                
             if _is_hallucination(text):
-                log.info("Отброшена галлюцинация: %r", text)
+                log.info("Отброшена галлюцинация/междометие: %r", text)
                 continue
+                
+            # Отбрасываем слишком короткие фразы (менее 4 символов, например "Ara.")
+            clean = re.sub(r'[^\w\s]', '', text).strip()
+            if len(clean) < 4: 
+                log.info("Отброшена слишком короткая фраза: %r", text)
+                continue
+                
             result.append(Segment(s.start, s.end, text))
+            
         return result

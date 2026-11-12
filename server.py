@@ -578,7 +578,20 @@ async def get_voices() -> dict:
 @app.websocket("/ws/translate")
 async def ws_translate(ws: WebSocket) -> None:
     await ws.accept()
-    
+    origin = ws.headers.get("origin", "")
+    # Разрешаем наши расширения во всех браузерах (Chrome, Opera, Edge, Yandex, Firefox, Brave)
+    allowed_prefixes = (
+        "chrome-extension://", 
+        "opera-extension://", 
+        "extension://", 
+        "moz-extension://", 
+        "browser-extension://"
+    )
+    # Также разрешаем пустой origin для тестов через curl/python-скрипты
+    if origin != "" and not origin.startswith(allowed_prefixes):
+        log.warning(f"Отклонено подключение с недопустимым Origin: {origin}")
+        await ws.close(code=1008) # 1008 = Policy Violation
+        return    
     # ИЗОЛИРОВАННЫЙ ПЕРЕВОДЧИК ДЛЯ КАЖДОЙ СЕССИИ
     local_translator = OpenAITranslationAdapter(
         source="en", target="ru", model=OLLAMA_MODEL, 

@@ -1,4 +1,9 @@
 // --- Объявления всех элементов (сначала!) ---
+const transMode = document.getElementById('trans-mode');
+const cloudSettings = document.getElementById('cloud-settings');
+const cloudUrl = document.getElementById('cloud-url');
+const cloudKey = document.getElementById('cloud-key');
+const cloudModel = document.getElementById('cloud-model');
 const startBtn = document.getElementById('start');
 const stopBtn = document.getElementById('stop');
 const statusEl = document.getElementById('status');
@@ -14,6 +19,8 @@ const voiceBlock = document.getElementById('voice-block'); // <-- блок XTTS
 const chunkSeconds = document.getElementById('chunk-seconds');
 const chunkVal = document.getElementById('chunk-val');
 const keepAlive = document.getElementById('keep-alive');
+const cloudVerifySsl = document.getElementById('cloud-verify-ssl');
+const subtitleOnly = document.getElementById('subtitle-only');
 
 const STATUS_TEXT = {
   idle: 'Выключено', starting: 'Запуск…', running: 'Работает: слушаю вкладку',
@@ -29,7 +36,7 @@ function render(state = { active: false, status: 'idle', detail: '' }) {
 }
 
 // --- Восстановление настроек ---
-chrome.storage.local.get(['transVol', 'origVol', 'showSubs', 'subSize', 'chunkSeconds', 'keepAlive'], (res) => {
+chrome.storage.local.get(['transVol', 'origVol', 'showSubs', 'subSize', 'chunkSeconds', 'keepAlive', 'transMode', 'cloudUrl', 'cloudKey', 'cloudModel', 'cloudVerifySsl'], (res) => {
   transVol.value = res.transVol ?? 100;
   origVol.value = res.origVol ?? 100;
   showSubs.checked = res.showSubs ?? true;
@@ -37,6 +44,15 @@ chrome.storage.local.get(['transVol', 'origVol', 'showSubs', 'subSize', 'chunkSe
   chunkSeconds.value = res.chunkSeconds ?? 4.0;
   chunkVal.textContent = (res.chunkSeconds ?? 4.0).toFixed(1);
   keepAlive.checked = res.keepAlive ?? true;
+  subtitleOnly.checked = res.subtitleOnly ?? false;
+  
+  // Загружаем настройки перевода
+  transMode.value = res.transMode ?? 'local';
+  cloudUrl.value = res.cloudUrl ?? '';
+  cloudKey.value = res.cloudKey ?? '';
+  cloudModel.value = res.cloudModel ?? '';
+  cloudVerifySsl.checked = res.cloudVerifySsl ?? true;
+  cloudSettings.style.display = transMode.value === 'cloud' ? 'block' : 'none';
   
   transVolVal.textContent = `${transVol.value}%`;
   origVolVal.textContent = `${origVol.value}%`;
@@ -89,6 +105,9 @@ startBtn.addEventListener('click', async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id) throw new Error('Не найдена активная вкладка');
     const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
+    
+    // ВОТ ГЛАВНЫЙ ФИКС: Принудительно сохраняем галочку и ЖДЕМ окончания сохранения
+    await chrome.storage.local.set({ subtitleOnly: subtitleOnly.checked });
     
     const res = await chrome.runtime.sendMessage({ target: 'background', type: 'start', tabId: tab.id, streamId });
     if (!res?.ok) throw new Error(res?.error || 'Не удалось запустить');
@@ -167,5 +186,44 @@ if (voiceSelect) {
     chrome.runtime.sendMessage({ target: 'background', type: 'set-voice', voice: v });
   });
 }
+// --- СОХРАНЕНИЕ НАСТРОЕК ОБЛАКА ---
+function saveTranslationSettings() {
+  chrome.storage.local.set({
+    transMode: transMode.value,
+    cloudUrl: cloudUrl.value.trim(),
+    cloudKey: cloudKey.value.trim(),
+    cloudModel: cloudModel.value.trim(),
+    cloudVerifySsl: cloudVerifySsl.checked
+  });
+}
+
+transMode.addEventListener('change', () => {
+  cloudSettings.style.display = transMode.value === 'cloud' ? 'block' : 'none';
+  saveTranslationSettings();
+  
+  // ДОБАВИТЬ ЭТО:
+  const mode = transMode.value;
+  chrome.runtime.sendMessage({
+    target: 'background',
+    type: 'update-translation-mode',
+    data: mode === 'cloud' ? {
+        mode: 'cloud', base_url: cloudUrl.value, api_key: cloudKey.value, model: cloudModel.value, verify_ssl: cloudVerifySsl.checked
+    } : { mode: 'local' }
+  });
+});
+
+// ВОТ ЗДЕСЬ ИСПОЛЬЗУЕМ 'input' ВМЕСТО 'change':
+// Сохраняем текстовые поля при вводе
+[cloudUrl, cloudKey, cloudModel].forEach(el => 
+  el.addEventListener('input', saveTranslationSettings)
+);
+
+// Сохраняем галочку SSL при изменении
+cloudVerifySsl.addEventListener('change', saveTranslationSettings);
+
+subtitleOnly.addEventListener('change', () => {
+  chrome.storage.local.set({ subtitleOnly: subtitleOnly.checked });
+  chrome.runtime.sendMessage({ target: 'background', type: 'set-subtitle-only', value: subtitleOnly.checked });
+});
 
 loadVoices();

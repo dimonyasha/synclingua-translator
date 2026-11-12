@@ -60,7 +60,12 @@ class FasterWhisperASR(ASRAdapter):
             language=language,
             beam_size=5,
             vad_filter=True,
-            vad_parameters=dict(threshold=0.5, min_speech_duration_ms=250), # Чуть более чувствительный VAD
+            vad_parameters=dict(
+                threshold=0.35,                # Снижаем порог (было 0.5), чтобы ловить тихую речь
+                min_speech_duration_ms=150,    # Разрешаем короткие реплики (было 250)
+                min_silence_duration_ms=500,   # Пауза 0.5 сек для завершения фразы
+                speech_pad_ms=200              # Добавляем по 200 мс по краям, чтобы не обрезать начало/конец слов
+            ),
             condition_on_previous_text=False,
         )
 

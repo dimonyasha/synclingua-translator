@@ -17,15 +17,15 @@ class TranslationPipeline:
             raise RuntimeError("Речь в файле не обнаружена.")
         source_text = " ".join(s.text for s in segments)
         
-        # Ошибка TranslationError всплывет наверх в server.py
         translated = self._translator.translate(source_text)
         
-        # НОВОЕ: если перевод слишком короткий, не озвучиваем его (только субтитры)
-        if len(translated.strip()) < 4:
-            return None, translated
-            
         if subtitle_only:
             return None, translated
+            
+        # НЕ ОЗВУЧИВАЕМ, но оставляем в субтитрах, если текст слишком короткий
+        if len(translated.strip()) < 3:
+            log.info("Пропуск озвучки для слишком короткой фразы: %r", translated)
+            return None, translated 
             
         result = self._tts.synthesize(translated, output_path)
         if save_text:

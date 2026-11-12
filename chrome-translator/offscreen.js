@@ -22,6 +22,7 @@ const MAX_BACKLOG = 8.0;      // Если отстали на 8 сек — сб�
 const DUCK_LEVEL = 0.15;      // Приглушение оригинала (15% от текущей громкости)
 const DUCK_RELEASE_MS = 350;  // Задержка перед возвратом звука (чтобы не «качало»)
 
+let currentTranslation = { mode: 'local' };
 let ctx = null;
 let stream = null;
 let workletNode = null;
@@ -39,6 +40,7 @@ let nextPlayTime = 0;          // когда закончится последн
 let playChain = Promise.resolve(); // сохраняет порядок воспроизведения
 let currentTransVol = 1.0;
 let currentOrigVol = 1.0;
+let currentSubtitleOnly = false;
 
 // ------------------------------------------------------------ связь с background
 function report(status, detail = '') {
@@ -55,6 +57,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg.type === 'start-capture') {
         preferredVoice = msg.voice ?? null;
         preferredChunkSeconds = msg.chunkSeconds ?? 4.0;
+        currentTranslation = msg.translation || { mode: 'local' };
+		currentSubtitleOnly = msg.subtitleOnly ?? false;
         await startCapture(msg.streamId);
       } 
       else if (msg.type === 'stop-capture') await stopCapture();
@@ -68,7 +72,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           ws.send(JSON.stringify({ type: 'set-chunk', value: preferredChunkSeconds }));
         }
       }
-      else if (msg.type === 'set-volume') {
+      else if (msg.type === 'set-subtitle-only') {
+        currentSubtitleOnly = msg.value;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'set-subtitle-only', value: currentSubtitleOnly }));
+        }
+      }      
+	  else if (msg.type === 'set-volume') {
         currentTransVol = msg.transVol;
         currentOrigVol = msg.origVol;
         
@@ -80,6 +90,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       else if (msg.type === 'set-voice') {
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'set-voice', voice: msg.voice }));
+        }
+      }
+      else if (msg.type === 'set-translation') {
+        currentTranslation = msg; // сохраняем на случай переподключения
+        delete currentTranslation.type;
+        delete currentTranslation.target;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ 
+            type: 'set-translation', 
+            ...currentTranslation 
+          }));
         }
       }
       
@@ -184,8 +205,17 @@ function connectWs() {
       sock.send(JSON.stringify({
         type: 'config', format: 'pcm16', sample_rate: TARGET_RATE, channels: 1,
       }));
-      // Отправляем сохранённую скорость чанка
-      sock.send(JSON.stringify({ type: 'set-chunk', value: preferredChunkSeconds }));
+      console.log(`[offscreen] Отправляем subtitle_only = ${currentSubtitleOnly}`);
+      sock.send(JSON.stringify({ type: 'set-subtitle-only', value: currentSubtitleOnly }));
+      
+      // ДОБАВИТЬ ЭТИ СТРОКИ:
+      sock.send(JSON.stringify({ 
+          type: 'set-translation', 
+          ...currentTranslation
+      }));
+      
+	  sock.send(JSON.stringify({ type: 'set-subtitle-only', value: currentSubtitleOnly }));
+	  
       report('running');
     };
 
@@ -230,14 +260,22 @@ function handleServerMessage(raw) {
   }
   switch (msg.type) {
     case 'audio':
-      playChain = playChain.then(() => playMp3(msg.data, msg.seq));
+      // ДОБАВЛЯЕМ .catch(), чтобы ошибка не ломала всю очередь
+      playChain = playChain
+        .then(() => playMp3(msg.data, msg.seq))
+        .catch(err => console.error('[offscreen] Ошибка очереди аудио:', err));
+        
       if (msg.text) {
           chrome.runtime.sendMessage({ target: 'background', type: 'show-subtitle', text: msg.text });
       }
       break;
     case 'error':
       console.warn('[server error]', msg.message);
-      report('running', `Сервер: ${msg.message}`);
+      if (msg.fatal) {
+          chrome.runtime.sendMessage({ target: 'background', type: 'fatal-error', detail: msg.message }).catch(() => {});
+      } else {
+          report('running', `Сервер: ${msg.message}`);
+      }
       break;
     case 'ready':
       serverEngine = msg.engine ?? null;
@@ -249,7 +287,12 @@ function handleServerMessage(raw) {
       report('running', `Голос: ${msg.voice}`);
       break;
     case 'no_speech':
-    case 'info':
+    case 'subtitle':
+      if (msg.text) {
+          chrome.runtime.sendMessage({ target: 'background', type: 'show-subtitle', text: msg.text });
+      }
+      break;    
+	case 'info':
       break;
     default:
       console.debug('[server]', msg);
@@ -337,6 +380,12 @@ function dropScheduled() {
 
 async function playMp3(b64, seq) {
   if (!ctx || !active) return;
+  
+  // ДОБАВЛЯЕМ: Принудительно будим аудиоконтекст, если браузер его усыпил
+  if (ctx.state === 'suspended') {
+      try { await ctx.resume(); } catch (e) { console.warn("Не удалось разбудить AudioContext", e); }
+  }
+
   let audioBuffer;
   try {
     audioBuffer = await ctx.decodeAudioData(base64ToBytes(b64).buffer);

@@ -26,7 +26,7 @@ import logging
 
 # Приветственное сообщение с донатом
 print("=" * 60)
-print("SyncLingua Server v1.1.1")
+print("SyncLingua Server v1.1.2")
 print("Проект работает полностью локально. Спасибо, что вы с нами!")
 print("Поддержать разработку: https://boosty.to/dimonyasha")
 print("=" * 60)
@@ -159,11 +159,10 @@ def build_shared_models():
     return asr, tts
 
 
-def translate_pcm(pipeline: TranslationPipeline, pcm: bytes,
-                  sample_rate: int, channels: int) -> tuple[bytes, str]:
+def translate_pcm(pipeline, pcm, sample_rate, channels, subtitle_only: bool) -> tuple[bytes | None, str]:
     with tempfile.TemporaryDirectory(prefix="rt_translate_") as tmp:
         wav_in_path = Path(tmp) / "chunk.wav"
-        wav_out_path = Path(tmp) / "chunk_ru.wav" # ИСПРАВЛЕНО: было mp3_path
+        wav_out_path = Path(tmp) / "chunk_ru.wav"
 
         with wave.open(str(wav_in_path), "wb") as w:
             w.setnchannels(channels)
@@ -172,14 +171,16 @@ def translate_pcm(pipeline: TranslationPipeline, pcm: bytes,
             w.writeframes(pcm)
 
         # Получаем и файл, и текст
-        _, translated_text = pipeline.run(wav_in_path, wav_out_path)
+        _, translated_text = pipeline.run(wav_in_path, wav_out_path, subtitle_only=subtitle_only) # <--- Убрана лишняя скобка
         
-        # Проверка: если файл не создался
+        # Если режим только субтитров, файл не создается
+        if subtitle_only:
+            return None, translated_text
+            
         if not wav_out_path.exists():
             return b"", translated_text
             
-        return wav_out_path.read_bytes(), translated_text # ИСПРАВЛЕНО: читаем WAV
-
+        return wav_out_path.read_bytes(), translated_text
 
 # ---------------------------------------------------------------- буфер
 class AudioBuffer:
@@ -242,6 +243,7 @@ class Session:
         self.seq = 0
         self._send_lock = asyncio.Lock()
         self.chunk_seconds = CHUNK_SECONDS
+        self.subtitle_only = False
 
     async def send(self, payload: dict) -> None:
         async with self._send_lock:
@@ -341,6 +343,10 @@ class Session:
                     await self.send_error("Недопустимое значение chunk_seconds")
             except (ValueError, TypeError):
                 await self.send_error("Некорректное значение chunk_seconds")
+        elif mtype == "set-subtitle-only":
+            self.subtitle_only = data.get("value", False)
+            log.info("Режим 'Только субтитры': %s", self.subtitle_only)
+            await self.send({"type": "info", "message": f"Subtitle only: {self.subtitle_only}"})
         elif mtype in ("set-voice", "set-xtts-voice"):
             await self._on_set_voice(data.get("voice"))
         elif mtype == "flush":
@@ -414,12 +420,20 @@ class Session:
             seq, pcm, rate, channels = await self.queue.get()
             try:
                 if self._tr_disabled:
-                    continue # Пропускаем, если был фатальный сбой (например, 401)
+                    continue
                     
                 wav_bytes, text = await loop.run_in_executor(
-                    self.executor, translate_pcm, self.pipeline, pcm, rate, channels)
-                payload = base64.b64encode(wav_bytes).decode("ascii")
-                await self.send({"type": "audio", "seq": seq, "format": "wav", "data": payload, "text": text})
+                    self.executor, translate_pcm, self.pipeline, pcm, rate, channels, self.subtitle_only)
+                
+                # ПРОВЕРКА НА РЕЖИМ СУБТИТРОВ
+                if wav_bytes is None:
+                    await self.send({"type": "subtitle", "seq": seq, "text": text})
+                elif wav_bytes:
+                    payload = base64.b64encode(wav_bytes).decode("ascii")
+                    await self.send({"type": "audio", "seq": seq, "format": "wav", "data": payload, "text": text})
+                else:
+                    await self.send({"type": "no_speech", "seq": seq})
+                    
             except RuntimeError as exc:
                 if NO_SPEECH_MARKER in str(exc):
                     await self.send({"type": "no_speech", "seq": seq})

@@ -52,10 +52,16 @@ async function startTranslation({ tabId, streamId }) {
   await setState({ active: true, status: 'starting', detail: '', tabId });
   
   try {
-    await ensureOffscreen();
+        // Принудительно внедряем content.js на вкладку, если его там нет
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['content.js']
+    }).catch(err => console.warn('Не удалось внедрить content.js:', err));
+	await ensureOffscreen();
     const s = await chrome.storage.local.get([
       'xttsVoice', 'voice', 'chunkSeconds', 
-      'transMode', 'cloudUrl', 'cloudKey', 'cloudModel', 'cloudVerifySsl'
+      'transMode', 'cloudUrl', 'cloudKey', 'cloudModel', 'cloudVerifySsl',
+	  'subtitleOnly'
     ]);
     
     let translation;
@@ -80,7 +86,8 @@ async function startTranslation({ tabId, streamId }) {
       streamId, 
       voice: s.xttsVoice ?? s.voice ?? null,
       chunkSeconds: s.chunkSeconds ?? 4.0,
-      translation: translation
+      translation: translation,
+	  subtitleOnly: s.subtitleOnly ?? false
     });
     if (!res?.ok) throw new Error(res?.error || 'Offscreen-документ не запустил захват');
     return { ok: true };
@@ -145,13 +152,24 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           }).catch(() => {});
         }
         return { ok: true };
-      case 'set-chunk':
+      case 'update-translation-mode':
+        if ((await getState()).active && (await hasOffscreen())) {
+          try { await sendToOffscreen({ type: 'set-translation', ...msg.data }, 1); } catch {}
+        }
+        return { ok: true };      
+	  case 'set-chunk':
         await chrome.storage.local.set({ chunkSeconds: msg.value });
         if ((await getState()).active && (await hasOffscreen())) {
           try { await sendToOffscreen({ type: 'set-chunk', value: msg.value }, 1); } catch {}
         }
         return { ok: true };
-      case 'set-keep-alive':
+      case 'set-subtitle-only':
+        await chrome.storage.local.set({ subtitleOnly: msg.value });
+        if ((await getState()).active && (await hasOffscreen())) {
+          try { await sendToOffscreen({ type: 'set-subtitle-only', value: msg.value }, 1); } catch {}
+        }
+        return { ok: true };      
+	  case 'set-keep-alive':
         await chrome.storage.local.set({ keepAlive: msg.value });
         return { ok: true };        
       // --- ВОТ СЮДА ДОБАВЛЯЕМ НОВЫЙ КЕЙС ---

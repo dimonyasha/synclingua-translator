@@ -26,7 +26,7 @@ import logging
 
 # Приветственное сообщение с донатом
 print("=" * 60)
-print("SyncLingua Server v1.1.2")
+print("SyncLingua Server v1.1.3")
 print("Проект работает полностью локально. Спасибо, что вы с нами!")
 print("Поддержать разработку: https://boosty.to/dimonyasha")
 print("=" * 60)

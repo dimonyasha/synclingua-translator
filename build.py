@@ -5,6 +5,7 @@ APP_NAME = "SyncLingua-Server"
 PyInstaller.__main__.run([
     'server.py',
     '--name=%s' % APP_NAME,
+    '--icon=icon.ico',
     '--onedir',
     '--noconfirm',
     '--clean',

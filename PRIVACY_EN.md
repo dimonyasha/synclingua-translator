@@ -23,3 +23,10 @@ If you explicitly select cloud mode (e.g., GigaChat or OpenRouter) in the extens
 All API keys are stored locally in your browser (Chrome Storage) and are sent only to the server you specified.
 
 **The SyncLingua developer has no access to your keys or your traffic.**
+
+### Website Analytics
+To improve the performance of our official website (`synclingua.ru`), we use the anonymized statistics service **Yandex.Metrika**. 
+This service collects technical information about visits (such as device type, browser, and entry pages), but **does not identify you as an individual**.
+We use this data only to understand which sections of the website are most useful and to fix errors.
+
+You can opt out of data collection by installing the official [Yandex.Metrika Blocker](https://yandex.ru/legal/metrica_termsofuse/) browser extension.

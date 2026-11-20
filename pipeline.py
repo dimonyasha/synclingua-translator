@@ -17,6 +17,7 @@ class TranslationPipeline:
             raise RuntimeError("Речь в файле не обнаружена.")
         source_text = " ".join(s.text for s in segments)
         
+        # Ошибка TranslationError всплывет наверх в server.py
         translated = self._translator.translate(source_text)
         
         if subtitle_only:
@@ -33,3 +34,8 @@ class TranslationPipeline:
             input_path.with_name(f"{input_path.stem}_ru.txt").write_text(translated, encoding="utf-8")
             
         return result, translated
+
+    def take_pending_message(self) -> dict | None:
+        """Возвращает отложенное сообщение от переводчика (например, о переходе на Fallback)."""
+        adapter = self._translator
+        return adapter.take_pending_message() if hasattr(adapter, "take_pending_message") else None

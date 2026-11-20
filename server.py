@@ -20,13 +20,14 @@
 import time
 from urllib.parse import urlparse
 from adapters.openai_translation import OpenAITranslationAdapter, TranslationError
+from adapters.fallback_translation import FallbackTranslationAdapter
 import os
 import sys
 import logging
 
 # Приветственное сообщение с донатом
 print("=" * 60)
-print("SyncLingua Server v1.1.3")
+print("SyncLingua Server v1.2.0")
 print("Проект работает полностью локально. Спасибо, что вы с нами!")
 print("Поддержать разработку: https://boosty.to/dimonyasha")
 print("=" * 60)
@@ -232,7 +233,9 @@ class AudioBuffer:
 # ---------------------------------------------------------------- сессия
 class Session:
     def __init__(self, ws: WebSocket, pipeline: TranslationPipeline,
-                 executor: ThreadPoolExecutor) -> None:
+                 executor: ThreadPoolExecutor, warmup_executor: ThreadPoolExecutor) -> None:
+        self.warmup_executor = warmup_executor # <-- ДОБАВИТЬ
+        self._warmup_task = None # <-- ДОБАВИТЬ
         self._tr_disabled = False        
         self.ws = ws
         self.pipeline = pipeline
@@ -270,11 +273,17 @@ class Session:
             await self.send_error(f"Голос не найден: {voice}")
     
     async def _on_set_translation(self, data: dict) -> None:
-        verify_ssl = data.get("verify_ssl", True) # По умолчанию True
+        verify_ssl = data.get("verify_ssl", True)
+        auto_fallback = data.get("auto_fallback", False)
+        
+        if self._warmup_task and not self._warmup_task.done():
+            self._warmup_task.cancel()
+            self._warmup_task = None
+
         try:
             mode = data.get("mode", "local")
             old_translator = self.pipeline._translator
-            self._tr_disabled = False # Сбрасываем блокировку при смене настроек
+            self._tr_disabled = False
 
             if mode == "cloud":
                 base_url = data.get("base_url", "").strip()
@@ -284,23 +293,44 @@ class Session:
                 if not api_key or not model or not base_url:
                     raise ValueError("Для облака укажите URL, ключ и модель")
                 
-                # БЕЗОПАСНАЯ ПРОВЕРКА URL
                 u = urlparse(base_url)
                 is_local = u.hostname in ("127.0.0.1", "localhost", "::1")
                 if not (u.scheme == "https" or (u.scheme == "http" and is_local)):
                     raise ValueError("Для облака нужен https:// (безопасное соединение)")
                 
-                self.pipeline._translator = OpenAITranslationAdapter(
+                cloud = OpenAITranslationAdapter(
                     source="en", target="ru", model=model, base_url=base_url, api_key=api_key,
-                    verify_ssl=verify_ssl # <-- Передаем
+                    verify_ssl=verify_ssl
                 )
-                log.info("Режим: ОБЛАКО. Модель=%s, URL=%s", model, base_url)
+                
+                if auto_fallback:
+                    local = OpenAITranslationAdapter(
+                        source="en", target="ru", model=OLLAMA_MODEL, 
+                        base_url="http://127.0.0.1:11434/v1", api_key="ollama"
+                    )
+                    self.pipeline._translator = FallbackTranslationAdapter(cloud, local)
+                    log.info("Режим: ОБЛАКО + FALLBACK. Модель=%s, URL=%s", model, base_url)
+                else:
+                    self.pipeline._translator = cloud
+                    log.info("Режим: ОБЛАКО. Модель=%s, URL=%s", model, base_url)
             else:
                 self.pipeline._translator = OpenAITranslationAdapter(
                     source="en", target="ru", model=OLLAMA_MODEL, 
                     base_url="http://127.0.0.1:11434/v1", api_key="ollama"
                 )
                 log.info("Режим: ЛОКАЛЬНО. Модель=%s, URL=http://127.0.0.1:11434/v1", OLLAMA_MODEL)
+                
+                if not self._warmup_task or self._warmup_task.done():
+                    async def _do_warmup():
+                        loop = asyncio.get_running_loop()
+                        try:
+                            await loop.run_in_executor(self.warmup_executor, self.pipeline._translator.warmup)
+                        except Exception as e:
+                            log.warning("Ошибка в задаче прогрева: %s", e)
+                    
+                    self._warmup_task = asyncio.create_task(_do_warmup())
+                    self._warmup_task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+                    log.info("Задача прогрева запущена в фоновом режиме.")
             
             if hasattr(old_translator, "close"):
                 old_translator.close()
@@ -424,9 +454,15 @@ class Session:
                     
                 wav_bytes, text = await loop.run_in_executor(
                     self.executor, translate_pcm, self.pipeline, pcm, rate, channels, self.subtitle_only)
-                
+
+                # Проверяем, не хочет ли переводчик сообщить что-то клиенту
+                pending = self.pipeline.take_pending_message()
+                if pending:
+                    await self.send(pending)
+                    
                 # ПРОВЕРКА НА РЕЖИМ СУБТИТРОВ
-                if wav_bytes is None:
+                # Если wav_bytes None (режим субтитров) ИЛИ пустой (короткая фраза) - шлем текст
+                if wav_bytes is None or wav_bytes == b"": 
                     await self.send({"type": "subtitle", "seq": seq, "text": text})
                 elif wav_bytes:
                     payload = base64.b64encode(wav_bytes).decode("ascii")
@@ -549,10 +585,12 @@ async def lifespan(app: FastAPI):
         log.warning("Ollama не запущена (это нормально, если вы используете облачный режим).")
         log.warning("Детали: %s", exc)
 
-    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pipeline")
+    executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pipeline")
+    warmup_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="warmup") # <-- ДОБАВИТЬ
     log.info("Загрузка моделей...")
     app.state.asr, app.state.tts = await loop.run_in_executor(executor, build_shared_models)
     app.state.executor = executor
+    app.state.warmup_executor = warmup_executor # <-- ДОБАВИТЬ
     log.info("Сервер готов")
     yield
     executor.shutdown(wait=False, cancel_futures=True)
@@ -601,7 +639,7 @@ async def ws_translate(ws: WebSocket) -> None:
         asr=app.state.asr, translator=local_translator, tts=app.state.tts
     )
     
-    session = Session(ws, session_pipeline, app.state.executor)
+    session = Session(ws, session_pipeline, app.state.executor, app.state.warmup_executor)
     worker = asyncio.create_task(session.worker())
     log.info("Клиент подключён: %s", ws.client)
 
@@ -626,8 +664,9 @@ async def ws_translate(ws: WebSocket) -> None:
         log.exception("Соединение прервано")
     finally:
         worker.cancel()
+        if session._warmup_task:
+            session._warmup_task.cancel() # <-- ДОБАВИТЬ
         log.info("Клиент отключён: %s", ws.client)
-
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,

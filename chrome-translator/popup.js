@@ -1,4 +1,5 @@
 // --- Объявления всех элементов (сначала!) ---
+const autoFallback = document.getElementById('auto-fallback');
 const transMode = document.getElementById('trans-mode');
 const cloudSettings = document.getElementById('cloud-settings');
 const cloudUrl = document.getElementById('cloud-url');
@@ -6,6 +7,10 @@ const cloudKey = document.getElementById('cloud-key');
 const cloudModel = document.getElementById('cloud-model');
 const startBtn = document.getElementById('start');
 const stopBtn = document.getElementById('stop');
+let currentTabId = null;
+chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+    if (tab) currentTabId = tab.id;
+});
 const statusEl = document.getElementById('status');
 const transVol = document.getElementById('trans-vol');
 const origVol = document.getElementById('orig-vol');
@@ -27,16 +32,25 @@ const STATUS_TEXT = {
   reconnecting: 'Нет связи с сервером, переподключение…', error: 'Ошибка',
 };
 
-function render(state = { active: false, status: 'idle', detail: '' }) {
-  startBtn.disabled = state.active;
-  stopBtn.disabled = !state.active;
+function render(state = { active: false, status: 'idle', detail: '', tabId: null }) {
+  const isCurrentTab = currentTabId && state.tabId === currentTabId;
+  
+  startBtn.disabled = state.active && isCurrentTab;
+  stopBtn.disabled = !state.active; 
+  
   statusEl.className = state.status === 'error' ? 'error' : '';
-  statusEl.textContent = [STATUS_TEXT[state.status] ?? state.status, state.detail]
-    .filter(Boolean).join(' — ');
+  
+  if (state.active && !isCurrentTab) {
+    statusEl.textContent = 'Работает на другой вкладке';
+  } else {
+    statusEl.textContent = [STATUS_TEXT[state.status] ?? state.status, state.detail]
+      .filter(Boolean).join(' — ');
+  }
 }
 
 // --- Восстановление настроек ---
-chrome.storage.local.get(['transVol', 'origVol', 'showSubs', 'subSize', 'chunkSeconds', 'keepAlive', 'transMode', 'cloudUrl', 'cloudKey', 'cloudModel', 'cloudVerifySsl'], (res) => {
+chrome.storage.local.get(['transVol', 'origVol', 'showSubs', 'subSize', 'chunkSeconds', 'keepAlive', 'transMode', 'cloudUrl', 'cloudKey', 'cloudModel', 'cloudVerifySsl', 'subtitleOnly', 'autoFallback'], (res) => {
+  autoFallback.checked = res.autoFallback ?? false;
   transVol.value = res.transVol ?? 100;
   origVol.value = res.origVol ?? 100;
   showSubs.checked = res.showSubs ?? true;
@@ -59,8 +73,11 @@ chrome.storage.local.get(['transVol', 'origVol', 'showSubs', 'subSize', 'chunkSe
 });
 
 chrome.storage.session.get('state').then(({ state }) => render(state));
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'session' && changes.state) render(changes.state.newValue);
+
+// Обновляем при смене вкладки, пока попап открыт
+chrome.tabs.onActivated.addListener(async () => {
+    const { state } = await chrome.storage.session.get('state');
+    render(state);
 });
 
 // --- Обработчики ---
@@ -106,8 +123,11 @@ startBtn.addEventListener('click', async () => {
     if (!tab?.id) throw new Error('Не найдена активная вкладка');
     const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
     
-    // ВОТ ГЛАВНЫЙ ФИКС: Принудительно сохраняем галочку и ЖДЕМ окончания сохранения
-    await chrome.storage.local.set({ subtitleOnly: subtitleOnly.checked });
+    // Принудительно сохраняем галочки перед стартом
+    await chrome.storage.local.set({ 
+        subtitleOnly: subtitleOnly.checked,
+        autoFallback: autoFallback.checked 
+    });
     
     const res = await chrome.runtime.sendMessage({ target: 'background', type: 'start', tabId: tab.id, streamId });
     if (!res?.ok) throw new Error(res?.error || 'Не удалось запустить');
@@ -189,11 +209,12 @@ if (voiceSelect) {
 // --- СОХРАНЕНИЕ НАСТРОЕК ОБЛАКА ---
 function saveTranslationSettings() {
   chrome.storage.local.set({
-    transMode: transMode.value,
+	transMode: transMode.value,
     cloudUrl: cloudUrl.value.trim(),
     cloudKey: cloudKey.value.trim(),
     cloudModel: cloudModel.value.trim(),
-    cloudVerifySsl: cloudVerifySsl.checked
+    cloudVerifySsl: cloudVerifySsl.checked,
+    autoFallback: autoFallback.checked	
   });
 }
 
@@ -225,5 +246,14 @@ subtitleOnly.addEventListener('change', () => {
   chrome.storage.local.set({ subtitleOnly: subtitleOnly.checked });
   chrome.runtime.sendMessage({ target: 'background', type: 'set-subtitle-only', value: subtitleOnly.checked });
 });
+
+// Слушаем прямые сообщения от background.js о смене статуса
+chrome.runtime.onMessage.addListener((msg) => {
+    if (msg?.target === 'popup' && msg.type === 'state-changed') {
+        render(msg.state);
+    }
+});
+
+autoFallback.addEventListener('change', saveTranslationSettings);
 
 loadVoices();

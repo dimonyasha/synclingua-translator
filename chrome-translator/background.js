@@ -12,6 +12,10 @@ async function getState() {
 async function setState(patch) {
   const next = { ...(await getState()), ...patch };
   await chrome.storage.session.set({ state: next });
+  
+  // Отправляем сообщение напрямую во все открытые попапы
+  chrome.runtime.sendMessage({ target: 'popup', type: 'state-changed', state: next }).catch(() => {});
+  
   return next;
 }
 
@@ -52,30 +56,28 @@ async function startTranslation({ tabId, streamId }) {
   await setState({ active: true, status: 'starting', detail: '', tabId });
   
   try {
-        // Принудительно внедряем content.js на вкладку, если его там нет
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['content.js']
-    }).catch(err => console.warn('Не удалось внедрить content.js:', err));
-	await ensureOffscreen();
+    await ensureOffscreen();
+    
+    // Запрашиваем настройки (добавлен autoFallback)
     const s = await chrome.storage.local.get([
       'xttsVoice', 'voice', 'chunkSeconds', 
       'transMode', 'cloudUrl', 'cloudKey', 'cloudModel', 'cloudVerifySsl',
-	  'subtitleOnly'
+      'subtitleOnly', 'autoFallback' 
     ]);
     
     let translation;
     if (s.transMode === 'cloud') {
-      // ТРЕБУЕМ ВСЕ ТРИ ПОЛЯ
       if (!s.cloudUrl || !s.cloudKey || !s.cloudModel) {
         throw new Error('Для облака укажите URL, ключ и модель в настройках.');
       }
+      
       translation = {
         mode: 'cloud',
         base_url: s.cloudUrl,
         api_key: s.cloudKey,
         model: s.cloudModel,
-        verify_ssl: s.cloudVerifySsl ?? true // <-- Передаем флаг
+        verify_ssl: s.cloudVerifySsl ?? true,
+        auto_fallback: s.autoFallback ?? false
       };
     } else {
       translation = { mode: 'local' };
@@ -87,8 +89,9 @@ async function startTranslation({ tabId, streamId }) {
       voice: s.xttsVoice ?? s.voice ?? null,
       chunkSeconds: s.chunkSeconds ?? 4.0,
       translation: translation,
-	  subtitleOnly: s.subtitleOnly ?? false
+      subtitleOnly: s.subtitleOnly ?? false
     });
+    
     if (!res?.ok) throw new Error(res?.error || 'Offscreen-документ не запустил захват');
     return { ok: true };
   } catch (err) {

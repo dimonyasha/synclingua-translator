@@ -3,6 +3,7 @@ import urllib.request
 import wave
 import sys
 import os
+import threading
 import io
 from pathlib import Path
 from paths import get_base_path
@@ -21,6 +22,7 @@ MODELS = {
 class EdgeTTSAdapter(TTSAdapter): 
     def __init__(self, voice_type: str = "male_1") -> None:
         self._voice_name = voice_type
+        self._lock = threading.Lock()
         
         # Если мы в .exe, используем безопасную папку в ProgramData
         if getattr(sys, 'frozen', False):
@@ -76,26 +78,24 @@ class EdgeTTSAdapter(TTSAdapter):
         if not clean_text:
             return output_path
 
-        # Создаем буфер в памяти вместо файла на диске
-        wav_buffer = io.BytesIO()
+        # Блокируем поток, чтобы два куска не генерировались одновременно
+        with self._lock:
+            wav_buffer = io.BytesIO()
         
-        with wave.open(wav_buffer, "wb") as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(self._voice.config.sample_rate)
+            with wave.open(wav_buffer, "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(self._voice.config.sample_rate)
             
-            # Универсальный вызов: поддерживает и новые, и старые версии piper-tts
-            if hasattr(self._voice, 'synthesize_wav'):
-                self._voice.synthesize_wav(clean_text, wav_file)
-            else:
-                self._voice.synthesize(clean_text, wav_file)
+                if hasattr(self._voice, 'synthesize_wav'):
+                    self._voice.synthesize_wav(clean_text, wav_file)
+                else:
+                    self._voice.synthesize(clean_text, wav_file)
                 
-        # Получаем байты из памяти
-        wav_bytes = wav_buffer.getvalue()
+            wav_bytes = wav_buffer.getvalue()
         
         if len(wav_bytes) < 100:
             log.error("ВНИМАНИЕ: Piper TTS сгенерировал пустой файл!")
-            
-        # Сохраняем сразу в итоговый файл (браузер всё равно проиграет WAV-байты)
+        
         output_path.write_bytes(wav_bytes)
         return output_path

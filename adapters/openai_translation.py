@@ -58,6 +58,7 @@ class OpenAITranslationAdapter(TranslationAdapter):
         self._source, self._target, self._model = source, target, model
         self._verify_ssl = verify_ssl
         self._api_key = api_key
+        self._is_warmed_up = False # <-- Флаг прогрева
 
         base = base_url.strip().rstrip("/")
         if base.endswith("/chat/completions"):
@@ -65,13 +66,11 @@ class OpenAITranslationAdapter(TranslationAdapter):
         self._base_url = base
         self._url = f"{base}/chat/completions"
         
-        # Надежная проверка на GigaChat
         self._is_gigachat = "giga.chat" in base.lower() or "sberbank" in base.lower()
         self._giga_token = None
 
         self._session = requests.Session()
         
-        # Если это GigaChat и включена проверка SSL, используем наш кастомный бандл
         if self._is_gigachat and verify_ssl:
             self._session.verify = _get_sber_ca_bundle()
         else:
@@ -107,6 +106,41 @@ class OpenAITranslationAdapter(TranslationAdapter):
         except requests.RequestException as e:
             raise TranslationError(f"Нет связи с сервером авторизации GigaChat: {e}", fatal=True)
 
+    def warmup(self) -> None:
+        """Прогревает локальную модель Ollama ИЛИ получает токен GigaChat."""
+        if self._is_warmed_up:
+            return
+        
+        # Если это GigaChat, просто запрашиваем токен заранее
+        if self._is_gigachat:
+            try:
+                log.info("Прогрев GigaChat (получение токена)...")
+                self._get_gigachat_token()
+                self._is_warmed_up = True
+                log.info("GigaChat успешно прогрет (токен получен)!")
+            except Exception as e:
+                log.warning("Не удалось прогреть GigaChat: %s", e)
+            return
+            
+        log.info("Прогрев локальной модели Ollama (загрузка весов в VRAM)...")
+        payload = {
+            "model": self._model,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 1,
+            "keep_alive": "30m"
+        }
+        self._session.headers.update({"Content-Type": "application/json"})
+    
+        try:
+            resp = self._session.post(self._url, json=payload, timeout=(3, 60))
+            if resp.ok:
+                self._is_warmed_up = True
+                log.info("Ollama успешно прогрета!")
+            else:
+                log.warning("Ошибка прогрева Ollama (HTTP %s): %s", resp.status_code, resp.text)
+        except Exception as e:
+            log.warning("Не удалось прогреть Ollama: %s", e)
+
     def translate(self, text: str) -> str:
         system_prompt = (
             "Ты профессиональный синхронный переводчик. Твоя единственная задача — "
@@ -125,40 +159,47 @@ class OpenAITranslationAdapter(TranslationAdapter):
             "max_tokens": min(1024, max(128, len(text))),
         }
 
-        # Если это GigaChat, получаем токен
+        if not self._is_gigachat:
+            payload["keep_alive"] = "30m" # Держим модель в памяти 30 минут
+
         if self._is_gigachat:
             if not self._giga_token:
                 self._giga_token = self._get_gigachat_token()
-            self._session.headers.update({
+            headers = {
                 "Authorization": f"Bearer {self._giga_token}",
                 "Content-Type": "application/json",
-            })
+            }
         else:
-            # Для OpenRouter / Ollama
-            self._session.headers.update({
+            headers = {
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
-            })
+            }
+
+        # Умные таймауты: 60 сек только для первого запроса, потом 15 сек
+        if "127.0.0.1" in self._url or "localhost" in self._url:
+            timeout_val = (5, 60) if not self._is_warmed_up else (5, 15)
+        else:
+            timeout_val = (5, 20)
 
         try:
-            resp = self._session.post(self._url, json=payload, timeout=(3, 8))
+            resp = self._session.post(self._url, json=payload, headers=headers, timeout=timeout_val)
+            if not self._is_gigachat:
+                self._is_warmed_up = True # После первого успешного перевода считаем прогретой
         except requests.Timeout:
-            raise TranslationError("Таймаут перевода")
+            self._is_warmed_up = False # <--- СБРОСИТЬ ФЛАГ
+            raise TranslationError("Таймаут перевода (модель слишком долго думает)")
         except requests.ConnectionError:
+            self._is_warmed_up = False # <--- СБРОСИТЬ ФЛАГ
             if "127.0.0.1" in self._url or "localhost" in self._url:
                 raise TranslationError("Ollama не запущена или недоступна. Проверьте трей.", fatal=True)
             raise TranslationError("Нет связи с сервером перевода")
 
-        # Если токен GigaChat протух, пробуем обновить
         if self._is_gigachat and resp.status_code == 401:
-            log.warning("Токен GigaChat протух, запрашиваем новый...")
             self._giga_token = self._get_gigachat_token()
             self._session.headers.update({"Authorization": f"Bearer {self._giga_token}"})
-            try:
-                resp = self._session.post(self._url, json=payload, timeout=(3, 8))
-            except requests.RequestException as e:
-                raise TranslationError(f"Повторный запрос не удался: {e}")
+            resp = self._session.post(self._url, json=payload, headers=headers, timeout=timeout_val)
 
+        # ... (остальной код обработки ответа и фильтров оставляем без изменений) ...
         if resp.status_code in (401, 403):
             raise TranslationError("Неверный API-ключ или нет доступа", fatal=True)
         if resp.status_code == 429:
@@ -174,14 +215,12 @@ class OpenAITranslationAdapter(TranslationAdapter):
         out = re.sub(r"[\u4e00-\u9fff]+", "", content)
         out = out.replace("Перевод:", "").replace("Translation:", "").strip()
 
-        # --- ИСПРАВЛЕНО: Фильтр ТОЛЬКО для GigaChat ---
         if self._is_gigachat:
             lower_out = out.lower()
             if any(phrase in lower_out for phrase in [
                 "языковые модели", "не обладают собственным мнением", 
                 "чувствительные темы", "временно ограничены", "открытом доступе"
             ]):
-                log.warning("GigaChat отказался переводить фразу (сработал фильтр). Пропускаем.")
                 raise TranslationError("GigaChat заблокировал фразу", fatal=False)
 
         if not out:

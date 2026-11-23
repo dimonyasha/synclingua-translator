@@ -27,7 +27,7 @@ import logging
 
 # Приветственное сообщение с донатом
 print("=" * 60)
-print("SyncLingua Server v1.2.0")
+print("SyncLingua Server v1.3.0")
 print("Проект работает полностью локально. Спасибо, что вы с нами!")
 print("Поддержать разработку: https://boosty.to/dimonyasha")
 print("=" * 60)
@@ -242,7 +242,9 @@ class Session:
         self.executor = executor
         self.format = "pcm16"
         self.buffer = AudioBuffer(DEFAULT_SAMPLE_RATE, 1)
-        self.queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUE)
+        self.asr_queue: asyncio.Queue = asyncio.Queue(maxsize=10)
+        self.trans_queue: asyncio.Queue = asyncio.Queue(maxsize=10)
+        self.tts_queue: asyncio.Queue = asyncio.Queue(maxsize=10)
         self.seq = 0
         self._send_lock = asyncio.Lock()
         self.chunk_seconds = CHUNK_SECONDS
@@ -310,6 +312,18 @@ class Session:
                     )
                     self.pipeline._translator = FallbackTranslationAdapter(cloud, local)
                     log.info("Режим: ОБЛАКО + FALLBACK. Модель=%s, URL=%s", model, base_url)
+                                # Запускаем фоновый прогрев для облака
+                if not self._warmup_task or self._warmup_task.done():
+                    async def _do_warmup():
+                        loop = asyncio.get_running_loop()
+                        try:
+                            await loop.run_in_executor(self.warmup_executor, self.pipeline._translator.warmup)
+                        except Exception as e:
+                            log.warning("Ошибка в задаче прогрева: %s", e)
+    
+                    self._warmup_task = asyncio.create_task(_do_warmup())
+                    log.info("Задача прогрева облака запущена.")
+    
                 else:
                     self.pipeline._translator = cloud
                     log.info("Режим: ОБЛАКО. Модель=%s, URL=%s", model, base_url)
@@ -333,7 +347,8 @@ class Session:
                     log.info("Задача прогрева запущена в фоновом режиме.")
             
             if hasattr(old_translator, "close"):
-                old_translator.close()
+                # Даем 10 секунд, чтобы текущие запросы завершились, и только потом закрываем
+                asyncio.get_running_loop().call_later(10.0, old_translator.close)
                 
             await self.send({"type": "info", "message": "Настройки перевода применены"})
         except Exception as e:
@@ -431,68 +446,141 @@ class Session:
         self.seq += 1
         job = (self.seq, pcm, self.buffer.sample_rate, self.buffer.channels)
         
-        if self.queue.full():
+        if self.asr_queue.full():
             try:
-                self.queue.get_nowait() 
-                self.queue.task_done()
-                log.warning("Очередь переполнена, старый кусок отброшен")
+                self.asr_queue.get_nowait() 
+                self.asr_queue.task_done()
+                log.warning("Очередь ASR переполнена, старый кусок отброшен")
             except asyncio.QueueEmpty:
                 pass
-                
-        self.queue.put_nowait(job)
-
-    async def worker(self) -> None:
-        loop = asyncio.get_running_loop()
-        last_error = None
-        last_error_time = 0.0
         
+        self.asr_queue.put_nowait(job)
+
+    # async def worker(self) -> None:
+        # loop = asyncio.get_running_loop()
+        # last_error = None
+        # last_error_time = 0.0
+        
+        # while True:
+            # seq, pcm, rate, channels = await self.queue.get()
+            # try:
+                # if self._tr_disabled:
+                    # continue
+                    
+                # wav_bytes, text = await loop.run_in_executor(
+                    # self.executor, translate_pcm, self.pipeline, pcm, rate, channels, self.subtitle_only)
+
+                # # Проверяем, не хочет ли переводчик сообщить что-то клиенту
+                # pending = self.pipeline.take_pending_message()
+                # if pending:
+                    # await self.send(pending)
+                    
+                # # ПРОВЕРКА НА РЕЖИМ СУБТИТРОВ
+                # # Если wav_bytes None (режим субтитров) ИЛИ пустой (короткая фраза) - шлем текст
+                # if wav_bytes is None or wav_bytes == b"": 
+                    # await self.send({"type": "subtitle", "seq": seq, "text": text})
+                # elif wav_bytes:
+                    # payload = base64.b64encode(wav_bytes).decode("ascii")
+                    # await self.send({"type": "audio", "seq": seq, "format": "wav", "data": payload, "text": text})
+                # else:
+                    # await self.send({"type": "no_speech", "seq": seq})
+                    
+            # except RuntimeError as exc:
+                # if NO_SPEECH_MARKER in str(exc):
+                    # await self.send({"type": "no_speech", "seq": seq})
+                # else:
+                    # await self.send_error(f"Ошибка обработки: {exc}", seq)
+            # except TranslationError as exc:
+                # log.warning("Ошибка перевода: %s", exc)
+                # if exc.fatal:
+                    # self._tr_disabled = True
+                    # await self.send({"type": "error", "seq": seq, "message": str(exc), "fatal": True})
+                # else:
+                    # now = time.monotonic()
+                    # if str(exc) != last_error or (now - last_error_time) > 15:
+                        # last_error = str(exc)
+                        # last_error_time = now
+                        # await self.send({"type": "error", "seq": seq, "message": str(exc), "fatal": False})
+                    # else:
+                        # await self.send({"type": "no_speech", "seq": seq})
+            # except Exception as exc:
+                # log.exception("Ошибка пайплайна")
+                # await self.send_error(f"Ошибка обработки: {exc}", seq)
+            # finally:
+                # self.queue.task_done()
+
+    async def asr_worker(self) -> None:
+        loop = asyncio.get_running_loop()
         while True:
-            seq, pcm, rate, channels = await self.queue.get()
+            seq, pcm, rate, channels = await self.asr_queue.get()
+            try:
+                with tempfile.TemporaryDirectory(prefix="rt_asr_") as tmp:
+                    wav_path = Path(tmp) / "chunk.wav"
+                    with wave.open(str(wav_path), "wb") as w:
+                        w.setnchannels(channels)
+                        w.setsampwidth(SAMPLE_WIDTH)
+                        w.setframerate(rate)
+                        w.writeframes(pcm)
+                
+                    segments = await loop.run_in_executor(self.executor, self.pipeline._asr.transcribe, wav_path)
+                    if not segments:
+                        await self.send({"type": "no_speech", "seq": seq})
+                        continue
+                    
+                    source_text = " ".join(s.text for s in segments)
+                    if len(source_text.strip()) < 2:
+                        await self.send({"type": "no_speech", "seq": seq})
+                        continue
+                    
+                    await self.trans_queue.put((seq, source_text))
+            except Exception as e:
+                log.error("Ошибка ASR: %s", e)
+            finally:
+                self.asr_queue.task_done()
+
+    async def translation_worker(self) -> None:
+        loop = asyncio.get_running_loop()
+        while True:
+            seq, source_text = await self.trans_queue.get()
             try:
                 if self._tr_disabled:
                     continue
-                    
-                wav_bytes, text = await loop.run_in_executor(
-                    self.executor, translate_pcm, self.pipeline, pcm, rate, channels, self.subtitle_only)
-
-                # Проверяем, не хочет ли переводчик сообщить что-то клиенту
+                translated = await loop.run_in_executor(self.executor, self.pipeline._translator.translate, source_text)
+            
                 pending = self.pipeline.take_pending_message()
                 if pending:
                     await self.send(pending)
-                    
-                # ПРОВЕРКА НА РЕЖИМ СУБТИТРОВ
-                # Если wav_bytes None (режим субтитров) ИЛИ пустой (короткая фраза) - шлем текст
-                if wav_bytes is None or wav_bytes == b"": 
-                    await self.send({"type": "subtitle", "seq": seq, "text": text})
-                elif wav_bytes:
-                    payload = base64.b64encode(wav_bytes).decode("ascii")
-                    await self.send({"type": "audio", "seq": seq, "format": "wav", "data": payload, "text": text})
-                else:
-                    await self.send({"type": "no_speech", "seq": seq})
-                    
-            except RuntimeError as exc:
-                if NO_SPEECH_MARKER in str(exc):
-                    await self.send({"type": "no_speech", "seq": seq})
-                else:
-                    await self.send_error(f"Ошибка обработки: {exc}", seq)
+                
+                await self.tts_queue.put((seq, translated))
             except TranslationError as exc:
                 log.warning("Ошибка перевода: %s", exc)
-                if exc.fatal:
-                    self._tr_disabled = True
-                    await self.send({"type": "error", "seq": seq, "message": str(exc), "fatal": True})
-                else:
-                    now = time.monotonic()
-                    if str(exc) != last_error or (now - last_error_time) > 15:
-                        last_error = str(exc)
-                        last_error_time = now
-                        await self.send({"type": "error", "seq": seq, "message": str(exc), "fatal": False})
-                    else:
-                        await self.send({"type": "no_speech", "seq": seq})
-            except Exception as exc:
-                log.exception("Ошибка пайплайна")
-                await self.send_error(f"Ошибка обработки: {exc}", seq)
+                await self.send_error(f"Ошибка перевода: {exc}", seq)
+            except Exception as e:
+                log.error("Ошибка перевода: %s", e)
             finally:
-                self.queue.task_done()
+                self.trans_queue.task_done()
+
+    async def tts_worker(self) -> None:
+        loop = asyncio.get_running_loop()
+        while True:
+            seq, translated_text = await self.tts_queue.get()
+            try:
+                if self.subtitle_only or len(translated_text.strip()) < 3:
+                    await self.send({"type": "subtitle", "seq": seq, "text": translated_text})
+                    continue
+            
+                with tempfile.TemporaryDirectory(prefix="rt_tts_") as tmp:
+                    wav_out_path = Path(tmp) / "chunk_ru.wav"
+                    await loop.run_in_executor(self.executor, self.pipeline._tts.synthesize, translated_text, wav_out_path)
+                
+                    if wav_out_path.exists():
+                        wav_bytes = wav_out_path.read_bytes()
+                        payload = base64.b64encode(wav_bytes).decode("ascii")
+                        await self.send({"type": "audio", "seq": seq, "format": "wav", "data": payload, "text": translated_text})
+            except Exception as e:
+                log.error("Ошибка TTS: %s", e)
+            finally:
+                self.tts_queue.task_done()
 
 # ---------------------------------------------------------------- Ollama
 class OllamaSetupError(RuntimeError):
@@ -640,7 +728,9 @@ async def ws_translate(ws: WebSocket) -> None:
     )
     
     session = Session(ws, session_pipeline, app.state.executor, app.state.warmup_executor)
-    worker = asyncio.create_task(session.worker())
+    worker_asr = asyncio.create_task(session.asr_worker())
+    worker_trans = asyncio.create_task(session.translation_worker())
+    worker_tts = asyncio.create_task(session.tts_worker())
     log.info("Клиент подключён: %s", ws.client)
 
     await session.send({
@@ -663,7 +753,9 @@ async def ws_translate(ws: WebSocket) -> None:
     except Exception:
         log.exception("Соединение прервано")
     finally:
-        worker.cancel()
+        worker_asr.cancel()
+        worker_trans.cancel()
+        worker_tts.cancel()
         if session._warmup_task:
             session._warmup_task.cancel() # <-- ДОБАВИТЬ
         log.info("Клиент отключён: %s", ws.client)

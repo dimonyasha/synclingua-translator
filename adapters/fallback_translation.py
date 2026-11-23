@@ -35,9 +35,9 @@ class FallbackTranslationAdapter(TranslationAdapter):
 
     @staticmethod
     def _is_soft_error(exc: Exception) -> bool:
-        if isinstance(exc, TranslationError):
-            return not exc.fatal
-        return isinstance(exc, (requests.Timeout, requests.ConnectionError))
+        # Переключаемся на локальный при ЛЮБОЙ ошибке перевода (включая неверный ключ),
+        # чтобы стрим не прерывался.
+        return isinstance(exc, (TranslationError, requests.Timeout, requests.ConnectionError))
 
     def translate(self, text: str) -> str:
         if self._circuit_open():
@@ -57,9 +57,12 @@ class FallbackTranslationAdapter(TranslationAdapter):
 
             if not self._using_fallback:
                 self._using_fallback = True
+                # Если ошибка фатальная (например, неверный ключ), пишем об этом
+                is_fatal = getattr(exc, 'fatal', False)
+                msg_text = "Ошибка ключа или доступа. Переключились на локальный перевод" if is_fatal else "Облако недоступно, переключились на локальный перевод"
                 self._pending_message = {
                     "type": "info",
-                    "message": "Облако недоступно, переключились на локальный перевод",
+                    "message": msg_text,
                 }
             return self._fallback.translate(text)
 
@@ -75,6 +78,9 @@ class FallbackTranslationAdapter(TranslationAdapter):
         return result
 
     def warmup(self) -> None:
+        # Прогреваем и облако (получаем токен), и локалку (грузим в VRAM)
+        if hasattr(self._primary, "warmup"):
+            self._primary.warmup()
         if hasattr(self._fallback, "warmup"):
             self._fallback.warmup()
 

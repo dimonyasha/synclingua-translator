@@ -280,7 +280,9 @@ function handleServerMessage(raw) {
     case 'ready':
       serverEngine = msg.engine ?? null;
       serverVoice = msg.voice ?? null;
-      applyPreferredVoice(); // Отправляем голос сразу после подключения
+      applyPreferredVoice();
+      // Отправляем команду в background, чтобы сбросить LOC при успешном подключении
+      chrome.runtime.sendMessage({ target: 'background', type: 'clear-badge' }).catch(() => {});
       break;
     case 'voice_changed':
       serverVoice = msg.voice;
@@ -292,7 +294,18 @@ function handleServerMessage(raw) {
           chrome.runtime.sendMessage({ target: 'background', type: 'show-subtitle', text: msg.text });
       }
       break;    
-	case 'info':
+    case 'info':
+      if (msg.message === "Настройки перевода применены") {
+          // Если это просто смена режима — принудительно гасим бейдж
+          chrome.runtime.sendMessage({ target: 'background', type: 'clear-badge' }).catch(() => {});
+      } else {
+          // Если это сообщение от Fallback (упало/восстановилось) — показываем в попапе и на иконке
+          chrome.runtime.sendMessage({ 
+            target: 'background', 
+            type: 'show-fallback-info', 
+            message: msg.message 
+          }).catch(() => {});
+      }
       break;
     default:
       console.debug('[server]', msg);

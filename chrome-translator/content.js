@@ -1,3 +1,9 @@
+if (window.__syncLinguaInjected) {
+    console.log("SyncLingua content.js уже внедрен");
+} else {
+    window.__syncLinguaInjected = true;
+    // ... весь остальной код content.js ...
+
 let subtitleDiv = null;
 let hideTimeout = null;
 let currentSettings = { show: true, size: '24' };
@@ -17,20 +23,15 @@ function updateStyle() {
 }
 
 function waitForPlayerAndInit() {
-  if (subtitleDiv) return;
-
-  const player = document.querySelector('.html5-video-player') 
-              || document.querySelector('video')?.parentElement;
-
-  if (player) {
+  if (document.querySelector('.html5-video-player') || document.querySelector('video')) {
     initSubtitles();
     return;
   }
 
+  // Если плеера нет, ставим постоянный наблюдатель
   if (!playerObserver) {
     playerObserver = new MutationObserver(() => {
-      const p = document.querySelector('.html5-video-player') 
-             || document.querySelector('video')?.parentElement;
+      const p = document.querySelector('.html5-video-player') || document.querySelector('video')?.parentElement;
       if (p) {
         playerObserver.disconnect();
         playerObserver = null;
@@ -124,3 +125,4 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     }, 4000);
   }
 });
+}

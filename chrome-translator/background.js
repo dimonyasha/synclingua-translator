@@ -54,6 +54,7 @@ async function sendToOffscreen(message, attempts = 5) {
 async function startTranslation({ tabId, streamId }) {
   if ((await getState()).active) await stopTranslation();
   await setState({ active: true, status: 'starting', detail: '', tabId });
+  chrome.action.setBadgeText({ text: '' });
   
   try {
     await ensureOffscreen();
@@ -107,6 +108,7 @@ async function stopTranslation() {
     await chrome.offscreen.closeDocument().catch(() => {});
   }
   await setState(IDLE);
+  chrome.action.setBadgeText({ text: '' });
 }
 
 // ---- сообщения ----
@@ -127,12 +129,33 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         await stopTranslation();
         await setState({ status: 'error', detail: msg.detail });
         return { ok: true };      
+      case 'show-fallback-info':
+        // Шлем сообщение в попап
+        chrome.runtime.sendMessage({ 
+          target: 'popup', 
+          type: 'fallback-triggered', 
+          message: msg.message 
+        }).catch(() => {});
+
+        // Управляем иконкой
+        if (msg.message.includes("восстановлен")) {
+            // Если облако ожило — убираем бейдж
+            chrome.action.setBadgeText({ text: '' });
+        } else {
+            // Если упало — показываем оранжевый бейдж LOC
+            chrome.action.setBadgeText({ text: 'LOC' });
+            chrome.action.setBadgeBackgroundColor({ color: '#ff9800' });
+        }
+        return { ok: true };
 	  case 'status': 
         if ((await getState()).active) {
           await setState({ status: msg.status, detail: msg.detail ?? '' });
         }
         return { ok: true };
-      case 'set-volume':
+      case 'clear-badge':
+        chrome.action.setBadgeText({ text: '' });
+        return { ok: true };
+	  case 'set-volume':
         await sendToOffscreen({ type: 'set-volume', transVol: msg.transVol, origVol: msg.origVol });
         return { ok: true };
       case 'set-voice': {
@@ -156,10 +179,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         }
         return { ok: true };
       case 'update-translation-mode':
+        chrome.action.setBadgeText({ text: '' });
         if ((await getState()).active && (await hasOffscreen())) {
           try { await sendToOffscreen({ type: 'set-translation', ...msg.data }, 1); } catch {}
         }
-        return { ok: true };      
+        return { ok: true };
 	  case 'set-chunk':
         await chrome.storage.local.set({ chunkSeconds: msg.value });
         if ((await getState()).active && (await hasOffscreen())) {

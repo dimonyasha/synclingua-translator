@@ -103,6 +103,9 @@
     <button id="start">Включить перевод</button>
     <button id="stop" disabled>Выключить</button>
     <div id="status">Выключено</div>
+	<div id="fallback-warning" style="display: none; background: #ff9800; color: #000; padding: 8px; border-radius: 6px; font-size: 12px; margin-bottom: 15px; text-align: center; font-weight: bold;">
+      ⚠️ <span id="fallback-text"></span>
+    </div>
     <div id="voice-block" hidden>
       <label for="xtts-voice-select">Голос озвучки (клонирование)</label>
       <select id="xtts-voice-select"></select>

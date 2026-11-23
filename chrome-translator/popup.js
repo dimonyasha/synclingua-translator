@@ -228,7 +228,7 @@ transMode.addEventListener('change', () => {
     target: 'background',
     type: 'update-translation-mode',
     data: mode === 'cloud' ? {
-        mode: 'cloud', base_url: cloudUrl.value, api_key: cloudKey.value, model: cloudModel.value, verify_ssl: cloudVerifySsl.checked
+        mode: 'cloud', base_url: cloudUrl.value, api_key: cloudKey.value, model: cloudModel.value, verify_ssl: cloudVerifySsl.checked, auto_fallback: autoFallback.checked
     } : { mode: 'local' }
   });
 });
@@ -257,3 +257,19 @@ chrome.runtime.onMessage.addListener((msg) => {
 autoFallback.addEventListener('change', saveTranslationSettings);
 
 loadVoices();
+
+// Слушаем сообщение о падении облака
+chrome.runtime.onMessage.addListener((msg) => {
+    if (msg?.target === 'popup' && msg.type === 'fallback-triggered') {
+        const warningDiv = document.getElementById('fallback-warning');
+        const warningText = document.getElementById('fallback-text');
+        
+        warningText.textContent = msg.message;
+        warningDiv.style.display = 'block';
+        
+        // Через 5 секунд прячем плашку, чтобы не мешала
+        setTimeout(() => {
+            warningDiv.style.display = 'none';
+        }, 5000);
+    }
+});

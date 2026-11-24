@@ -54,11 +54,13 @@ class OpenAITranslationAdapter(TranslationAdapter):
                  model: str = "translategemma:4b",
                  base_url: str = "http://127.0.0.1:11434/v1",
                  api_key: str = "ollama", 
-                 verify_ssl: bool = True) -> None:
+                 verify_ssl: bool = True,
+                 soft_timeout: tuple[float, float] | None = None) -> None:
         self._source, self._target, self._model = source, target, model
         self._verify_ssl = verify_ssl
         self._api_key = api_key
         self._is_warmed_up = False # <-- Флаг прогрева
+        self._soft_timeout = soft_timeout
 
         base = base_url.strip().rstrip("/")
         if base.endswith("/chat/completions"):
@@ -141,7 +143,7 @@ class OpenAITranslationAdapter(TranslationAdapter):
         except Exception as e:
             log.warning("Не удалось прогреть Ollama: %s", e)
 
-    def translate(self, text: str) -> str:
+    def translate(self, text: str, context: str = "") -> str:
         system_prompt = (
             "Ты профессиональный синхронный переводчик. Твоя единственная задача — "
             "переводить текст с английского на русский язык. Выводи ТОЛЬКО переведенный "
@@ -149,6 +151,8 @@ class OpenAITranslationAdapter(TranslationAdapter):
             "английские или китайские символы. "
             "При переводе обращений используй форму 'ты', если в оригинале используется 'you' в единственном числе, и форму 'вы', если речь идёт о группе людей или официальном обращении. Не используй излишне формальное 'Вы' без необходимости."
         )
+        if context:
+            system_prompt += f"\n\n{context}\nПереведи следующий текст, учитывая контекст:"
         payload = {
             "model": self._model,
             "messages": [
@@ -175,11 +179,13 @@ class OpenAITranslationAdapter(TranslationAdapter):
                 "Content-Type": "application/json",
             }
 
-        # Умные таймауты: 60 сек только для первого запроса, потом 15 сек
-        if "127.0.0.1" in self._url or "localhost" in self._url:
+        # Используем soft_timeout, если он задан (для Fallback)
+        if self._soft_timeout:
+            timeout_val = self._soft_timeout
+        elif "127.0.0.1" in self._url or "localhost" in self._url:
             timeout_val = (5, 60) if not self._is_warmed_up else (5, 15)
         else:
-            timeout_val = (5, 20)
+            timeout_val = (5, 30) # Увеличили стандартный таймаут для облака
 
         try:
             resp = self._session.post(self._url, json=payload, headers=headers, timeout=timeout_val)

@@ -73,29 +73,51 @@ class EdgeTTSAdapter(TTSAdapter):
     def current_voice(self) -> str:
         return self._voice_name
         
-    def synthesize(self, text: str, output_path: Path) -> Path:
+    def synthesize(self, text: str, output_path: Path, length_scale: float = 1.0) -> Path:
         clean_text = text.strip(" .,!?-—\n\t")
         if not clean_text:
             return output_path
 
-        # Блокируем поток, чтобы два куска не генерировались одновременно
+        # Блокируем поток
         with self._lock:
-            wav_buffer = io.BytesIO()
-        
-            with wave.open(wav_buffer, "wb") as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(self._voice.config.sample_rate)
-            
-                if hasattr(self._voice, 'synthesize_wav'):
-                    self._voice.synthesize_wav(clean_text, wav_file)
-                else:
-                    self._voice.synthesize(clean_text, wav_file)
+            try:
+                from piper.voice import SynthesisConfig
+                syn_config = SynthesisConfig(length_scale=length_scale)
                 
+                # Собираем аудио-чанки в память (новый API)
+                chunks = list(self._voice.synthesize(clean_text, syn_config=syn_config))
+                
+                if not chunks:
+                    return output_path
+                    
+                sample_rate = chunks[0].sample_rate
+                sample_width = chunks[0].sample_width
+                channels = chunks[0].sample_channels
+                
+                wav_buffer = io.BytesIO()
+                with wave.open(wav_buffer, "wb") as wav_file:
+                    wav_file.setnchannels(channels)
+                    wav_file.setsampwidth(sample_width)
+                    wav_file.setframerate(sample_rate)
+                    for chunk in chunks:
+                        wav_file.writeframes(chunk.audio_int16_bytes)
+                        
+            except (ImportError, AttributeError):
+                # Старый API (если нет SynthesisConfig)
+                wav_buffer = io.BytesIO()
+                with wave.open(wav_buffer, "wb") as wav_file:
+                    wav_file.setnchannels(1)
+                    wav_file.setsampwidth(2)
+                    wav_file.setframerate(self._voice.config.sample_rate)
+                    
+                    if hasattr(self._voice, 'synthesize_wav'):
+                        self._voice.synthesize_wav(clean_text, wav_file)
+                    else:
+                        self._voice.synthesize(clean_text, wav_file)
+                        
             wav_bytes = wav_buffer.getvalue()
-        
-        if len(wav_bytes) < 100:
-            log.error("ВНИМАНИЕ: Piper TTS сгенерировал пустой файл!")
-        
-        output_path.write_bytes(wav_bytes)
-        return output_path
+            if len(wav_bytes) < 100:
+                log.error("ВНИМАНИЕ: Piper TTS сгенерировал пустой файл!")
+                
+            output_path.write_bytes(wav_bytes)
+            return output_path

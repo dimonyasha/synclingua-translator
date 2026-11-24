@@ -24,10 +24,12 @@ from adapters.fallback_translation import FallbackTranslationAdapter
 import os
 import sys
 import logging
+import secrets
+from fastapi import Request, HTTPException
 
 # Приветственное сообщение с донатом
 print("=" * 60)
-print("SyncLingua Server v1.3.0")
+print("SyncLingua Server v1.4.0")
 print("Проект работает полностью локально. Спасибо, что вы с нами!")
 print("Поддержать разработку: https://boosty.to/dimonyasha")
 print("=" * 60)
@@ -99,6 +101,8 @@ import json
 import tempfile
 import wave
 import requests
+import numpy as np
+import re
 
 # Отключаем проверку SSL для HuggingFace (чтобы антивирус не мешал скачиванию моделей)
 os.environ["HF_HUB_DISABLE_SSL_VERIFY"] = "1"
@@ -191,6 +195,7 @@ class AudioBuffer:
         self.sample_rate = sample_rate
         self.channels = channels
         self._data = bytearray()
+        self.taken = 0
 
     @property
     def frame_bytes(self) -> int:
@@ -219,6 +224,37 @@ class AudioBuffer:
         elif params != (self.sample_rate, self.channels):
             raise ValueError("Параметры WAV изменились посреди потока")
         self._data += frames
+    
+    def take_at_pause(self, target_s, max_s, search_s=1.2, win_ms=40):
+        """Возвращает (start_sec, pcm) или None, если ещё рано."""
+        if self.seconds < target_s:
+            return None
+        x = np.frombuffer(bytes(self._data), dtype="<i2")
+        if self.channels > 1:
+            x = x[::self.channels]
+        rate = self.sample_rate
+        win = int(rate * win_ms / 1000)
+        forced = self.seconds >= max_s
+        end = min(len(x), int(rate * max_s))
+        beg = max(0, int(rate * ((max_s if forced else target_s) - search_s)))
+        cut = None
+        if end - beg > 2 * win:
+            seg = x[beg:end].astype(np.float32)
+            n = (len(seg) // win) * win
+            rms = np.sqrt((seg[:n].reshape(-1, win) ** 2).mean(axis=1))
+            i = int(rms.argmin())
+            if rms[i] < 300 or forced:
+                cut = beg + i * win + win // 2
+        if cut is None:
+            if not forced:
+                return None
+            cut = end
+        nbytes = cut * self.frame_bytes
+        chunk = bytes(self._data[:nbytes])
+        del self._data[:nbytes]
+        start = self.taken / rate
+        self.taken += cut
+        return start, chunk
 
     def take(self) -> bytes:
         usable = len(self._data) - (len(self._data) % self.frame_bytes)
@@ -229,6 +265,51 @@ class AudioBuffer:
     def clear(self) -> None:
         self._data.clear()
 
+_END = re.compile(r'[.!?…]["»)\]]?$')
+
+class SentenceJoiner:
+    def __init__(self, max_chunks=2, max_words=12):
+        self.parts, self.t0, self.t1 = [], None, None
+        self.max_chunks, self.max_words = max_chunks, max_words
+
+    def push(self, start, end, text):
+        text = text.strip()
+        if not text:
+            return None
+
+        # Защита от дублей Whisper (если текст повторяет конец предыдущего)
+        if self.parts:
+            last_part = self.parts[-1]
+            if text in last_part or last_part in text:
+                return None # Точный дубль, пропускаем
+            
+            # Ищем совпадение последних 3 слов предыдущего куска с первыми 3 словами нового
+            last_words = last_part.split()[-3:]
+            text_words = text.split()
+            if len(last_words) > 0 and len(text_words) > len(last_words):
+                if text_words[:len(last_words)] == last_words:
+                    # Отрезаем эти слова из начала нового куска
+                    text = " ".join(text_words[len(last_words):])
+                    if not text:
+                        return None
+
+        if not self.parts:
+            self.t0 = start
+        self.parts.append(text)
+        self.t1 = end
+        
+        joined = " ".join(self.parts)
+        if (_END.search(joined) or len(self.parts) >= self.max_chunks
+                or len(joined.split()) >= self.max_words):
+            return self.flush()
+        return None
+
+    def flush(self):
+        if not self.parts:
+            return None
+        out = (self.t0, self.t1, " ".join(self.parts))
+        self.parts = []
+        return out
 
 # ---------------------------------------------------------------- сессия
 class Session:
@@ -249,6 +330,9 @@ class Session:
         self._send_lock = asyncio.Lock()
         self.chunk_seconds = CHUNK_SECONDS
         self.subtitle_only = False
+        self.srt_data = []
+        self.joiner = SentenceJoiner()
+        self.context_history = []  # Здесь будем хранить последние фразы
 
     async def send(self, payload: dict) -> None:
         async with self._send_lock:
@@ -302,7 +386,8 @@ class Session:
                 
                 cloud = OpenAITranslationAdapter(
                     source="en", target="ru", model=model, base_url=base_url, api_key=api_key,
-                    verify_ssl=verify_ssl
+                    verify_ssl=verify_ssl,
+                    soft_timeout=(3.0, 6.0)  # <--- УВЕЛИЧИВАЕМ ТАЙМАУТ
                 )
                 
                 if auto_fallback:
@@ -312,6 +397,9 @@ class Session:
                     )
                     self.pipeline._translator = FallbackTranslationAdapter(cloud, local)
                     log.info("Режим: ОБЛАКО + FALLBACK. Модель=%s, URL=%s", model, base_url)
+                else:
+                    self.pipeline._translator = cloud
+                    log.info("Режим: ОБЛАКО. Модель=%s, URL=%s", model, base_url)
                                 # Запускаем фоновый прогрев для облака
                 if not self._warmup_task or self._warmup_task.done():
                     async def _do_warmup():
@@ -323,10 +411,7 @@ class Session:
     
                     self._warmup_task = asyncio.create_task(_do_warmup())
                     log.info("Задача прогрева облака запущена.")
-    
-                else:
-                    self.pipeline._translator = cloud
-                    log.info("Режим: ОБЛАКО. Модель=%s, URL=%s", model, base_url)
+
             else:
                 self.pipeline._translator = OpenAITranslationAdapter(
                     source="en", target="ru", model=OLLAMA_MODEL, 
@@ -399,6 +484,8 @@ class Session:
         elif mtype == "reset":
             self.buffer.clear()
             await self.send({"type": "info", "message": "buffer reset"})
+        elif mtype == "export-srt":
+            await self._export_srt()
         elif mtype == "config":
             await self._on_config(data)
         elif mtype == "set-translation":     # <--- ДОБАВИТЬ ВОТ ЭТИ ДВЕ СТРОКИ
@@ -434,27 +521,28 @@ class Session:
             await self.send_error(str(exc))
             return
 
-        if self.buffer.seconds >= self.chunk_seconds:
-            await self._flush()
+        # Ищем паузу для нарезки
+        res = self.buffer.take_at_pause(self.chunk_seconds, self.chunk_seconds + 3.0)
+        if res:
+            start_sec, pcm = res
+            self.seq += 1
+            job = (self.seq, start_sec, pcm, self.buffer.sample_rate, self.buffer.channels)
+            if not self.asr_queue.full():
+                self.asr_queue.put_nowait(job)
 
     async def _flush(self) -> None:
         if self.buffer.seconds < MIN_SECONDS:
             await self.send({"type": "info", "message": "buffer too short, skipped"})
             return
-        
+    
         pcm = self.buffer.take()
+        start_sec = self.buffer.taken / self.buffer.sample_rate
+        self.buffer.taken += len(pcm) // self.buffer.frame_bytes
+    
         self.seq += 1
-        job = (self.seq, pcm, self.buffer.sample_rate, self.buffer.channels)
-        
-        if self.asr_queue.full():
-            try:
-                self.asr_queue.get_nowait() 
-                self.asr_queue.task_done()
-                log.warning("Очередь ASR переполнена, старый кусок отброшен")
-            except asyncio.QueueEmpty:
-                pass
-        
-        self.asr_queue.put_nowait(job)
+        job = (self.seq, start_sec, pcm, self.buffer.sample_rate, self.buffer.channels)
+        if not self.asr_queue.full():
+            self.asr_queue.put_nowait(job)
 
     # async def worker(self) -> None:
         # loop = asyncio.get_running_loop()
@@ -512,7 +600,7 @@ class Session:
     async def asr_worker(self) -> None:
         loop = asyncio.get_running_loop()
         while True:
-            seq, pcm, rate, channels = await self.asr_queue.get()
+            seq, start_sec, pcm, rate, channels = await self.asr_queue.get()
             try:
                 with tempfile.TemporaryDirectory(prefix="rt_asr_") as tmp:
                     wav_path = Path(tmp) / "chunk.wav"
@@ -523,8 +611,18 @@ class Session:
                         w.writeframes(pcm)
                 
                     segments = await loop.run_in_executor(self.executor, self.pipeline._asr.transcribe, wav_path)
+                
+                    # Вычисляем реальное время окончания куска
+                    end_sec = start_sec + (len(pcm) / (rate * channels * SAMPLE_WIDTH))
+
                     if not segments:
-                        await self.send({"type": "no_speech", "seq": seq})
+                        # Если речь не найдена, сбрасываем накопленное в joiner
+                        flushed = self.joiner.flush()
+                        if flushed:
+                            t0, t1, text = flushed
+                            await self.trans_queue.put((seq, t0, t1, text))
+                        else:
+                            await self.send({"type": "no_speech", "seq": seq})
                         continue
                     
                     source_text = " ".join(s.text for s in segments)
@@ -532,7 +630,11 @@ class Session:
                         await self.send({"type": "no_speech", "seq": seq})
                         continue
                     
-                    await self.trans_queue.put((seq, source_text))
+                        # Пытаемся склеить предложение
+                    joined = self.joiner.push(start_sec, end_sec, source_text)
+                    if joined:
+                        t0, t1, text = joined
+                        await self.trans_queue.put((seq, t0, t1, text))
             except Exception as e:
                 log.error("Ошибка ASR: %s", e)
             finally:
@@ -541,17 +643,39 @@ class Session:
     async def translation_worker(self) -> None:
         loop = asyncio.get_running_loop()
         while True:
-            seq, source_text = await self.trans_queue.get()
+            seq, start_sec, end_sec, source_text = await self.trans_queue.get() # <-- ОБНОВЛЕНО
             try:
                 if self._tr_disabled:
                     continue
-                translated = await loop.run_in_executor(self.executor, self.pipeline._translator.translate, source_text)
+                
+                context_str = ""
+                if self.context_history:
+                    context_str = "Предыдущий контекст (для связности):\n" + "\n".join(self.context_history[-2:]) + "\n\n"
+    
+                # Простая защита от дублей Whisper
+                if self.context_history:
+                    last_text = self.context_history[-1]
+                    # Если новый текст начинается с последних 20 символов старого, срезаем начало
+                    if source_text.startswith(last_text[-20:]):
+                        source_text = source_text[len(last_text[-20:]):].strip()
+                        if not source_text:
+                            continue # Если после срезания ничего не осталось, пропускаем
             
+                # ОДИН вызов перевода (убедись, что нет второго)
+                translated = await loop.run_in_executor(
+                    self.executor, self.pipeline._translator.translate, source_text, context_str
+                )
+                
                 pending = self.pipeline.take_pending_message()
                 if pending:
                     await self.send(pending)
-                
-                await self.tts_queue.put((seq, translated))
+                    
+                self.context_history.append(source_text)
+                if len(self.context_history) > 5:
+                    self.context_history.pop(0)
+                    
+                # Передаем время дальше в TTS
+                await self.tts_queue.put((seq, start_sec, end_sec, source_text, translated)) # <-- ОБНОВЛЕНО
             except TranslationError as exc:
                 log.warning("Ошибка перевода: %s", exc)
                 await self.send_error(f"Ошибка перевода: {exc}", seq)
@@ -563,16 +687,33 @@ class Session:
     async def tts_worker(self) -> None:
         loop = asyncio.get_running_loop()
         while True:
-            seq, translated_text = await self.tts_queue.get()
+            seq, start_sec, end_sec, source_text, translated_text = await self.tts_queue.get() # <-- ОБНОВЛЕНО
             try:
+                # Пишем в SRT реальное время
+                self.srt_data.append((start_sec, end_sec, translated_text))
+                
                 if self.subtitle_only or len(translated_text.strip()) < 3:
                     await self.send({"type": "subtitle", "seq": seq, "text": translated_text})
                     continue
-            
+                
+                scale = 1.0
+                if len(source_text) > 0:
+                    ratio = len(translated_text) / len(source_text)
+                    if ratio > 1.3:
+                        scale = 0.8
+                    elif ratio > 1.15:
+                        scale = 0.9
+                        
                 with tempfile.TemporaryDirectory(prefix="rt_tts_") as tmp:
                     wav_out_path = Path(tmp) / "chunk_ru.wav"
-                    await loop.run_in_executor(self.executor, self.pipeline._tts.synthesize, translated_text, wav_out_path)
-                
+                    await loop.run_in_executor(
+                        self.executor, 
+                        self.pipeline._tts.synthesize, 
+                        translated_text, 
+                        wav_out_path, 
+                        scale
+                    )
+                    
                     if wav_out_path.exists():
                         wav_bytes = wav_out_path.read_bytes()
                         payload = base64.b64encode(wav_bytes).decode("ascii")
@@ -581,7 +722,26 @@ class Session:
                 log.error("Ошибка TTS: %s", e)
             finally:
                 self.tts_queue.task_done()
+    async def _export_srt(self) -> None:
+        if not self.srt_data:
+            await self.send({"type": "srt-data", "content": ""})
+            return
+    
+        def format_time(seconds: float) -> str:
+            hrs = int(seconds // 3600)
+            mins = int((seconds % 3600) // 60)
+            secs = int(seconds % 60)
+            ms = int((seconds - int(seconds)) * 1000)
+            return f"{hrs:02d}:{mins:02d}:{secs:02d},{ms:03d}"
 
+        lines = []
+        for i, (start, end, text) in enumerate(self.srt_data, 1):
+            start_str = format_time(start)
+            end_str = format_time(end)
+            lines.append(f"{i}\n{start_str} --> {end_str}\n{text}\n")
+        
+        srt_content = "\n".join(lines)
+        await self.send({"type": "srt-data", "content": srt_content})
 # ---------------------------------------------------------------- Ollama
 class OllamaSetupError(RuntimeError):
     """Ollama недоступна или модель не удалось подготовить."""
@@ -692,6 +852,22 @@ def voices_info(tts_adapter) -> dict:
     
 app = FastAPI(title="Realtime audio translator", lifespan=lifespan)
 
+# Хранилище активных токенов (в памяти)
+active_tokens = set()
+
+@app.get("/auth")
+async def get_auth_token(request: Request):
+    origin = request.headers.get("origin", "")
+    allowed_prefixes = (
+        "chrome-extension://", "opera-extension://", "extension://", 
+        "moz-extension://", "browser-extension://"
+    )
+    if origin != "" and not origin.startswith(allowed_prefixes):
+        raise HTTPException(status_code=403, detail="Invalid Origin")
+    
+    token = secrets.token_hex(16)
+    active_tokens.add(token)
+    return {"token": token}
 
 @app.get("/health")
 async def health() -> dict:
@@ -704,6 +880,16 @@ async def get_voices() -> dict:
 @app.websocket("/ws/translate")
 async def ws_translate(ws: WebSocket) -> None:
     await ws.accept()
+        
+    # --- ЗАЩИТА ТОКЕНОМ ---
+    token = ws.query_params.get("token")
+    if not token or token not in active_tokens:
+        log.warning("Отклонено подключение: неверный или отсутствующий токен.")
+        await ws.close(code=1008)
+        return
+    active_tokens.remove(token) # Токен одноразовый
+    # -----------------------
+
     origin = ws.headers.get("origin", "")
     # Разрешаем наши расширения во всех браузерах (Chrome, Opera, Edge, Yandex, Firefox, Brave)
     allowed_prefixes = (

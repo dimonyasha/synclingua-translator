@@ -96,33 +96,35 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 
   if (msg.type === 'subtitle') {
-    if (!subtitleDiv) {
-      // Плеер ещё не готов — ждём и показываем текст с задержкой
-      waitForPlayerAndInit();
-      setTimeout(() => {
-        if (!subtitleDiv) return;
-        subtitleDiv.textContent = msg.text;
-        if (currentSettings.show) {
+      if (!subtitleDiv) {
+          waitForPlayerAndInit();
+          return;
+      }
+      
+      subtitleDiv.textContent = msg.text;
+      
+      if (currentSettings.show) {
           subtitleDiv.style.setProperty('opacity', '1', 'important');
-        }
-        clearTimeout(hideTimeout);
-        hideTimeout = setTimeout(() => {
+      }
+      
+      // Умный таймер: минимум 1.5 секунды, максимум 5 секунд
+      let readTime = msg.text.length * 100; // 100 мс на символ
+      readTime = Math.max(1500, Math.min(5000, readTime));
+      
+      clearTimeout(hideTimeout);
+      hideTimeout = setTimeout(() => {
           subtitleDiv.style.setProperty('opacity', '0', 'important');
-        }, 4000);
-      }, 300);
-      return;
-    }
-    
-    subtitleDiv.textContent = msg.text;
-    
-    if (currentSettings.show) {
-      subtitleDiv.style.setProperty('opacity', '1', 'important'); 
-    }
-    
-    clearTimeout(hideTimeout);
-    hideTimeout = setTimeout(() => {
-      subtitleDiv.style.setProperty('opacity', '0', 'important'); 
-    }, 4000);
+      }, readTime);
   }
+});
+// YouTube — это SPA. Слушаем событие смены видео
+window.addEventListener('yt-navigate-finish', () => {
+    console.log("SyncLingua: Переход на новое видео YouTube");
+    // Удаляем старый div, чтобы создать новый на новом плеере
+    if (subtitleDiv) {
+        subtitleDiv.remove();
+        subtitleDiv = null;
+    }
+    waitForPlayerAndInit();
 });
 }

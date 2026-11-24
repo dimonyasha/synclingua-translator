@@ -103,7 +103,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           }));
         }
       }
-      
+      else if (msg.type === 'request-srt') {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'export-srt' }));
+        }
+      }
       sendResponse({ ok: true });
       
     } catch (err) {
@@ -195,10 +199,22 @@ async function stopCapture() {
 }
 
 // ------------------------------------------------------------ WebSocket
-function connectWs() {
-  const sock = new WebSocket(WS_URL);
-  ws = sock;
+async function connectWs() {
+    // Запрашиваем токен у сервера перед подключением
+    let token = "";
+    try {
+        const res = await fetch('http://127.0.0.1:8000/auth');
+        const data = await res.json();
+        token = data.token;
+    } catch (e) {
+        console.error("[offscreen] Не удалось получить токен авторизации", e);
+        report('reconnecting', 'Ошибка авторизации');
+        return; // Без токена не подключаемся
+    }
 
+    const sock = new WebSocket(`${WS_URL}?token=${token}`);
+    ws = sock;
+    
     sock.onopen = () => {
       if (sock !== ws) return;
       reconnectAttempts = 0;
@@ -207,15 +223,13 @@ function connectWs() {
       }));
       console.log(`[offscreen] Отправляем subtitle_only = ${currentSubtitleOnly}`);
       sock.send(JSON.stringify({ type: 'set-subtitle-only', value: currentSubtitleOnly }));
-      
+      sock.send(JSON.stringify({ type: 'set-chunk', value: preferredChunkSeconds }));
       // ДОБАВИТЬ ЭТИ СТРОКИ:
       sock.send(JSON.stringify({ 
           type: 'set-translation', 
           ...currentTranslation
       }));
-      
-	  sock.send(JSON.stringify({ type: 'set-subtitle-only', value: currentSubtitleOnly }));
-	  
+
       report('running');
     };
 
@@ -294,7 +308,10 @@ function handleServerMessage(raw) {
           chrome.runtime.sendMessage({ target: 'background', type: 'show-subtitle', text: msg.text });
       }
       break;    
-    case 'info':
+    case 'srt-data':
+        chrome.runtime.sendMessage({ target: 'background', type: 'srt-data', content: msg.content }).catch(() => {});
+        break;
+	case 'info':
       if (msg.message === "Настройки перевода применены") {
           // Если это просто смена режима — принудительно гасим бейдж
           chrome.runtime.sendMessage({ target: 'background', type: 'clear-badge' }).catch(() => {});

@@ -26,6 +26,7 @@ const chunkVal = document.getElementById('chunk-val');
 const keepAlive = document.getElementById('keep-alive');
 const cloudVerifySsl = document.getElementById('cloud-verify-ssl');
 const subtitleOnly = document.getElementById('subtitle-only');
+const downloadSrtBtn = document.getElementById('download-srt');
 
 const STATUS_TEXT = {
   idle: 'Выключено', starting: 'Запуск…', running: 'Работает: слушаю вкладку',
@@ -142,6 +143,10 @@ startBtn.addEventListener('click', async () => {
 stopBtn.addEventListener('click', async () => {
   stopBtn.disabled = true;
   await chrome.runtime.sendMessage({ target: 'background', type: 'stop' });
+});
+
+downloadSrtBtn.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ target: 'background', type: 'request-srt' });
 });
 
 // --- Голоса XTTS/F5 ---
@@ -271,5 +276,20 @@ chrome.runtime.onMessage.addListener((msg) => {
         setTimeout(() => {
             warningDiv.style.display = 'none';
         }, 5000);
+    }
+	if (msg?.target === 'popup' && msg.type === 'srt-data') {
+        if (!msg.content) {
+            alert('Субтитры пока пусты. Включите перевод и подождите немного.');
+            return;
+        }
+        const blob = new Blob([msg.content], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'SyncLingua_Subtitles.srt';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
     }
 });

@@ -106,6 +106,8 @@ async function stopTranslation() {
   if (await hasOffscreen()) {
     try { await sendToOffscreen({ type: 'stop-capture' }, 1); } catch { /* уже закрыт */ }
     await chrome.offscreen.closeDocument().catch(() => {});
+    // Даем браузеру 200 мс, чтобы окончательно убить процесс
+    await new Promise(r => setTimeout(r, 200)); 
   }
   await setState(IDLE);
   chrome.action.setBadgeText({ text: '' });
@@ -129,7 +131,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         await stopTranslation();
         await setState({ status: 'error', detail: msg.detail });
         return { ok: true };      
-      case 'show-fallback-info':
+      case 'request-srt':
+          if ((await getState()).active && (await hasOffscreen())) {
+              try { await sendToOffscreen({ type: 'request-srt' }, 1); } catch {}
+          }
+          return { ok: true };
+      case 'srt-data':
+          chrome.runtime.sendMessage({ target: 'popup', type: 'srt-data', content: msg.content }).catch(() => {});
+          return { ok: true };
+	  case 'show-fallback-info':
         // Шлем сообщение в попап
         chrome.runtime.sendMessage({ 
           target: 'popup', 

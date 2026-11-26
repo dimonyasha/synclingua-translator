@@ -134,7 +134,8 @@ SyncLingua — это полностью бесплатный и открыты�
 
 Разработку новых функций (например, переводчика текста с экрана).
 
-https://img.shields.io/badge/%D0%9F%D0%BE%D0%B4%D0%B4%D0%B5%D1%80%D0%B6%D0%B0%D1%82%D1%8C-Boosty-orange?style=for-the-badge&logo=heart&logoColor=white
+[![Поддержать на Boosty](https://img.shields.io/badge/%D0%9F%D0%BE%D0%B4%D0%B4%D0%B5%D1%80%D0%B6%D0%B0%D1%82%D1%8C-Boosty-orange?style=for-the-badge&logo=heart&logoColor=white)](https://boosty.to/dimonyasha)
+
 
 📄 Лицензия
 Проект распространяется под лицензией MIT.

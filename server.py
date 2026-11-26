@@ -29,7 +29,7 @@ from fastapi import Request, HTTPException
 
 # Приветственное сообщение с донатом
 print("=" * 60)
-print("SyncLingua Server v1.4.0")
+print("SyncLingua Server v1.4.1")
 print("Проект работает полностью локально. Спасибо, что вы с нами!")
 print("Поддержать разработку: https://boosty.to/dimonyasha")
 print("=" * 60)
@@ -243,7 +243,8 @@ class AudioBuffer:
             n = (len(seg) // win) * win
             rms = np.sqrt((seg[:n].reshape(-1, win) ** 2).mean(axis=1))
             i = int(rms.argmin())
-            if rms[i] < 300 or forced:
+            noise_floor = max(150, np.percentile(rms, 10)) # Адаптивный порог
+            if rms[i] <= noise_floor or forced:
                 cut = beg + i * win + win // 2
         if cut is None:
             if not forced:
@@ -268,7 +269,7 @@ class AudioBuffer:
 _END = re.compile(r'[.!?…]["»)\]]?$')
 
 class SentenceJoiner:
-    def __init__(self, max_chunks=2, max_words=12):
+    def __init__(self, max_chunks=2, max_words=18):
         self.parts, self.t0, self.t1 = [], None, None
         self.max_chunks, self.max_words = max_chunks, max_words
 
@@ -277,28 +278,14 @@ class SentenceJoiner:
         if not text:
             return None
 
-        # Защита от дублей Whisper (если текст повторяет конец предыдущего)
-        if self.parts:
-            last_part = self.parts[-1]
-            if text in last_part or last_part in text:
-                return None # Точный дубль, пропускаем
-            
-            # Ищем совпадение последних 3 слов предыдущего куска с первыми 3 словами нового
-            last_words = last_part.split()[-3:]
-            text_words = text.split()
-            if len(last_words) > 0 and len(text_words) > len(last_words):
-                if text_words[:len(last_words)] == last_words:
-                    # Отрезаем эти слова из начала нового куска
-                    text = " ".join(text_words[len(last_words):])
-                    if not text:
-                        return None
-
+        # Никакой дедупликации по тексту, только накопление
         if not self.parts:
             self.t0 = start
         self.parts.append(text)
         self.t1 = end
         
         joined = " ".join(self.parts)
+        # Если накопили много слов или предложение закончилось — отдаем
         if (_END.search(joined) or len(self.parts) >= self.max_chunks
                 or len(joined.split()) >= self.max_words):
             return self.flush()
@@ -529,6 +516,8 @@ class Session:
             job = (self.seq, start_sec, pcm, self.buffer.sample_rate, self.buffer.channels)
             if not self.asr_queue.full():
                 self.asr_queue.put_nowait(job)
+            else:
+                log.warning("Очередь ASR переполнена, чанк seq=%d потерян", self.seq)
 
     async def _flush(self) -> None:
         if self.buffer.seconds < MIN_SECONDS:
@@ -543,6 +532,8 @@ class Session:
         job = (self.seq, start_sec, pcm, self.buffer.sample_rate, self.buffer.channels)
         if not self.asr_queue.full():
             self.asr_queue.put_nowait(job)
+        else:
+            log.warning("Очередь ASR переполнена, чанк seq=%d потерян", self.seq)
 
     # async def worker(self) -> None:
         # loop = asyncio.get_running_loop()
@@ -652,15 +643,6 @@ class Session:
                 if self.context_history:
                     context_str = "Предыдущий контекст (для связности):\n" + "\n".join(self.context_history[-2:]) + "\n\n"
     
-                # Простая защита от дублей Whisper
-                if self.context_history:
-                    last_text = self.context_history[-1]
-                    # Если новый текст начинается с последних 20 символов старого, срезаем начало
-                    if source_text.startswith(last_text[-20:]):
-                        source_text = source_text[len(last_text[-20:]):].strip()
-                        if not source_text:
-                            continue # Если после срезания ничего не осталось, пропускаем
-            
                 # ОДИН вызов перевода (убедись, что нет второго)
                 translated = await loop.run_in_executor(
                     self.executor, self.pipeline._translator.translate, source_text, context_str

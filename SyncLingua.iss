@@ -1,12 +1,13 @@
 [Setup]
 AppName=SyncLingua
-AppVersion=1.4.0
+AppVersion=1.4.1
 AppPublisher=Dimonyasha
 AppPublisherURL=https://github.com/dimonyasha/synclingua-translator
 AppSupportURL=https://github.com/dimonyasha/synclingua-translator
 AppUpdatesURL=https://github.com/dimonyasha/synclingua-translator
 DefaultDirName={autopf}\SyncLingua
 DisableProgramGroupPage=yes
+DisableDirPage=no
 ; Раскомментируй строку ниже, если хочешь выбрать иконку для установщика (нужно будет положить icon.ico рядом)
 SetupIconFile=icon.ico
 OutputDir=Output

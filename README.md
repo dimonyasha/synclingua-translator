@@ -8,7 +8,7 @@
 
 **Синхронный перевод звука вкладки с озвучкой и субтитрами. Приватно, локально и бесплатно.**
 
-[![Статус](https://img.shields.io/badge/Version-1.4.1-success)](#)
+[![Статус](https://img.shields.io/badge/Version-1.5.0-success)](#)
 [![Платформа](https://img.shields.io/badge/Platform-Windows%2010%2F11-blue)](#)
 [![Лицензия](https://img.shields.io/badge/License-MIT-green)](#)
 

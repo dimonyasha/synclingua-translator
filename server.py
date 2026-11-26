@@ -24,12 +24,13 @@ from adapters.fallback_translation import FallbackTranslationAdapter
 import os
 import sys
 import logging
+import configparser
 import secrets
 from fastapi import Request, HTTPException
 
 # Приветственное сообщение с донатом
 print("=" * 60)
-print("SyncLingua Server v1.4.1")
+print("SyncLingua Server v1.5.0")
 print("Проект работает полностью локально. Спасибо, что вы с нами!")
 print("Поддержать разработку: https://boosty.to/dimonyasha")
 print("=" * 60)
@@ -126,6 +127,13 @@ DEFAULT_SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "16000"))
 CHUNK_SECONDS = 3.0
 MIN_SECONDS = float(os.getenv("MIN_SECONDS", "0.5"))
 MAX_QUEUE = 3
+# Читаем config.ini, если он есть (создается установщиком)
+config = configparser.ConfigParser()
+if os.path.exists("config.ini"):
+    config.read("config.ini", encoding="utf-8")
+    if "Settings" in config and "asr_model" in config["Settings"]:
+        os.environ["ASR_MODEL"] = config["Settings"]["asr_model"]
+        print(f"[Config] Загружена модель ASR из конфига: {os.environ['ASR_MODEL']}")
 ASR_MODEL = os.getenv("ASR_MODEL", "small")
 ASR_DEVICE = os.getenv("ASR_DEVICE", "auto")
 SAMPLE_WIDTH = 2  # PCM16 = 2 байта на сэмпл

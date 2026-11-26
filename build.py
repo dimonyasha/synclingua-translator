@@ -37,4 +37,15 @@ PyInstaller.__main__.run([
     '--hidden-import=ctranslate2',
 ])
 
-print("Сборка завершена! Ищите папку dist/SyncLingua-Server")
+print("Сборка Setup Assistant...")
+PyInstaller.__main__.run([
+    'setup_assistant.py',
+    '--name=SyncLingua-Setup-Assistant',
+    '--icon=icon.ico',
+    '--onedir',
+    '--noconfirm',
+    '--clean',
+    '--hidden-import=ollama',
+    '--collect-all=ollama',
+])
+print("Сборка завершена! Ищите папки dist/SyncLingua-Server и dist/SyncLingua-Setup-Assistant")

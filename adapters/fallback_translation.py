@@ -39,12 +39,12 @@ class FallbackTranslationAdapter(TranslationAdapter):
         # чтобы стрим не прерывался.
         return isinstance(exc, (TranslationError, requests.Timeout, requests.ConnectionError))
 
-    def translate(self, text: str, context: str = "") -> str:
+    def translate(self, text: str, context: str = "", glossary: str = "") -> str:
         if self._circuit_open():
-            return self._fallback.translate(text, context)
+            return self._fallback.translate(text, context, glossary)
 
         try:
-            result = self._primary.translate(text, context)
+            result = self._primary.translate(text, context, glossary)
         except Exception as exc:
             if not self._is_soft_error(exc):
                 raise
@@ -64,7 +64,7 @@ class FallbackTranslationAdapter(TranslationAdapter):
                     "type": "info",
                     "message": msg_text,
                 }
-            return self._fallback.translate(text, context)
+            return self._fallback.translate(text, context, glossary)
 
         if self._failures > 0:
             self._failures = 0

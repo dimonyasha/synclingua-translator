@@ -143,7 +143,7 @@ class OpenAITranslationAdapter(TranslationAdapter):
         except Exception as e:
             log.warning("Не удалось прогреть Ollama: %s", e)
 
-    def translate(self, text: str, context: str = "") -> str:
+    def translate(self, text: str, context: str = "", glossary: str = "") -> str:
         system_prompt = (
             "Ты профессиональный синхронный переводчик. Твоя единственная задача — "
             "переводить текст с английского на русский язык. Выводи ТОЛЬКО переведенный "
@@ -151,6 +151,8 @@ class OpenAITranslationAdapter(TranslationAdapter):
             "английские или китайские символы. "
             "При переводе обращений используй форму 'ты', если в оригинале используется 'you' в единственном числе, и форму 'вы', если речь идёт о группе людей или официальном обращении. Не используй излишне формальное 'Вы' без необходимости."
         )
+        if glossary:
+            system_prompt += f"\n\nОБЯЗАТЕЛЬНЫЙ ГЛОССАРИЙ (используй эти переводы без изменений):\n{glossary}"
         if context:
             system_prompt += f"\n\n{context}\nПереведи следующий текст, учитывая контекст:"
         payload = {

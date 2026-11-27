@@ -123,7 +123,7 @@ TTS: Piper TTS (локально)
 
 Client: Chrome Extension (Manifest V3), Web Audio API
 
-💖 Поддержать проект
+💖 **Поддержать проект:**
 SyncLingua — это полностью бесплатный и открытый проект. Я не беру денег за подписку, не показываю рекламу и не собираю ваши данные. Всё работает локально на вашем компьютере.
 
 Если проект сэкономил вам время, вы можете поддержать дальнейшую разработку. Собранные средства пойдут на:
@@ -134,8 +134,8 @@ SyncLingua — это полностью бесплатный и открыты�
 
 Разработку новых функций (например, переводчика текста с экрана).
 
-[![Поддержать (Boosty)](https://img.shields.io/badge/Поддержать-Boosty-orange?style=for-the-badge&logo=heart&logoColor=white)](https://boosty.to/dimonyasha)
-[![Telegram](https://img.shields.io/badge/Telegram-Следить_за_новостями-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/synclingua)
+
+[Boosty (донаты)](https://boosty.to/dimonyasha) • [Telegram (новости и обновления)](https://t.me/synclingua)
 
 
 📄 Лицензия

@@ -30,7 +30,7 @@ from fastapi import Request, HTTPException
 
 # Приветственное сообщение с донатом
 print("=" * 60)
-print("SyncLingua Server v1.5.0")
+print("SyncLingua Server v1.5.1")
 print("Проект работает полностью локально. Спасибо, что вы с нами!")
 print("Поддержать разработку: https://boosty.to/dimonyasha")
 print("=" * 60)
@@ -326,6 +326,7 @@ class Session:
         self.chunk_seconds = CHUNK_SECONDS
         self.subtitle_only = False
         self.srt_data = []
+        self.glossary = ""
         self.joiner = SentenceJoiner()
         self.context_history = []  # Здесь будем хранить последние фразы
 
@@ -485,6 +486,10 @@ class Session:
             await self._on_config(data)
         elif mtype == "set-translation":     # <--- ДОБАВИТЬ ВОТ ЭТИ ДВЕ СТРОКИ
             await self._on_set_translation(data)
+        elif mtype == "set-glossary":
+            self.glossary = data.get("glossary", "").strip()
+            log.info("Глоссарий обновлен (символов: %d)", len(self.glossary))
+            await self.send({"type": "info", "message": "Glossary updated"})
         else:
             await self.send_error(f"Неизвестный тип сообщения: {mtype!r}")
 
@@ -653,7 +658,7 @@ class Session:
     
                 # ОДИН вызов перевода (убедись, что нет второго)
                 translated = await loop.run_in_executor(
-                    self.executor, self.pipeline._translator.translate, source_text, context_str
+                    self.executor, self.pipeline._translator.translate, source_text, context_str, self.glossary
                 )
                 
                 pending = self.pipeline.take_pending_message()
@@ -812,9 +817,17 @@ def init_ollama(model: str = OLLAMA_MODEL, host: str = OLLAMA_HOST) -> None:
     log.info("Ollama: модель %s готова", model)
 
 # ---------------------------------------------------------------- приложение
+def handle_exception(loop, context):
+    msg = context.get("exception", context["message"])
+    # Игнорируем ошибку обрыва соединения при закрытии вкладки
+    if "ConnectionResetError" in str(msg) or "WinError 10054" in str(msg):
+        return
+    loop.default_exception_handler(context)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
+    loop.set_exception_handler(handle_exception)
 
     # Делаем проверку Ollama НЕОБЯЗАТЕЛЬНОЙ
     try:
@@ -940,5 +953,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
                         datefmt="%H:%M:%S")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpx2").setLevel(logging.WARNING)
     uvicorn.run(app, host=os.getenv("HOST", "127.0.0.1"),
                 port=int(os.getenv("PORT", "8000")), workers=1)

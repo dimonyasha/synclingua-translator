@@ -135,7 +135,7 @@ SyncLingua — это полностью бесплатный и открыты�
 Разработку новых функций (например, переводчика текста с экрана).
 
 
-[Boosty (донаты)](https://boosty.to/dimonyasha) • [Telegram (новости и обновления)](https://t.me/synclingua)
+[![Поддержать (Boosty)](https://img.shields.io/badge/Поддержать-Boosty-orange?style=for-the-badge&logo=heart&logoColor=white)](https://boosty.to/dimonyasha) • [Telegram (новости и обновления)](https://t.me/synclingua)
 
 
 📄 Лицензия

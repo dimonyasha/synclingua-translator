@@ -1,6 +1,6 @@
 [Setup]
 AppName=SyncLingua
-AppVersion=1.5.0
+AppVersion=1.5.1
 AppPublisher=Dimonyasha
 AppPublisherURL=https://github.com/dimonyasha/synclingua-translator
 AppSupportURL=https://github.com/dimonyasha/synclingua-translator

@@ -90,7 +90,8 @@ async function startTranslation({ tabId, streamId }) {
       voice: s.xttsVoice ?? s.voice ?? null,
       chunkSeconds: s.chunkSeconds ?? 4.0,
       translation: translation,
-      subtitleOnly: s.subtitleOnly ?? false
+      subtitleOnly: s.subtitleOnly ?? false,
+	  glossary: s.glossary ?? ""
     });
     
     if (!res?.ok) throw new Error(res?.error || 'Offscreen-документ не запустил захват');
@@ -206,6 +207,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           try { await sendToOffscreen({ type: 'set-subtitle-only', value: msg.value }, 1); } catch {}
         }
         return { ok: true };      
+	  case 'set-glossary':
+          if ((await getState()).active && (await hasOffscreen())) {
+              try { await sendToOffscreen({ type: 'set-glossary', glossary: msg.value }, 1); } catch {}
+          }
+          return { ok: true };
 	  case 'set-keep-alive':
         await chrome.storage.local.set({ keepAlive: msg.value });
         return { ok: true };        

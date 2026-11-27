@@ -26,6 +26,7 @@ const chunkVal = document.getElementById('chunk-val');
 const keepAlive = document.getElementById('keep-alive');
 const cloudVerifySsl = document.getElementById('cloud-verify-ssl');
 const subtitleOnly = document.getElementById('subtitle-only');
+const glossaryText = document.getElementById('glossary-text');
 const downloadSrtBtn = document.getElementById('download-srt');
 
 const STATUS_TEXT = {
@@ -50,10 +51,11 @@ function render(state = { active: false, status: 'idle', detail: '', tabId: null
 }
 
 // --- Восстановление настроек ---
-chrome.storage.local.get(['transVol', 'origVol', 'showSubs', 'subSize', 'chunkSeconds', 'keepAlive', 'transMode', 'cloudUrl', 'cloudKey', 'cloudModel', 'cloudVerifySsl', 'subtitleOnly', 'autoFallback'], (res) => {
+chrome.storage.local.get(['transVol', 'origVol', 'showSubs', 'subSize', 'chunkSeconds', 'keepAlive', 'transMode', 'cloudUrl', 'cloudKey', 'cloudModel', 'cloudVerifySsl', 'subtitleOnly', 'autoFallback', 'glossary'], (res) => {
   autoFallback.checked = res.autoFallback ?? false;
   transVol.value = res.transVol ?? 100;
   origVol.value = res.origVol ?? 100;
+  glossaryText.value = res.glossary ?? '';
   showSubs.checked = res.showSubs ?? true;
   subSize.value = res.subSize ?? '24';
   chunkSeconds.value = res.chunkSeconds ?? 4.0;
@@ -127,7 +129,8 @@ startBtn.addEventListener('click', async () => {
     // Принудительно сохраняем галочки перед стартом
     await chrome.storage.local.set({ 
         subtitleOnly: subtitleOnly.checked,
-        autoFallback: autoFallback.checked 
+        autoFallback: autoFallback.checked,
+        glossary: glossaryText.value		
     });
     
     const res = await chrome.runtime.sendMessage({ target: 'background', type: 'start', tabId: tab.id, streamId });
@@ -260,6 +263,11 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 autoFallback.addEventListener('change', saveTranslationSettings);
+
+glossaryText.addEventListener('input', () => {
+    chrome.storage.local.set({ glossary: glossaryText.value });
+    chrome.runtime.sendMessage({ target: 'background', type: 'set-glossary', value: glossaryText.value });
+});
 
 loadVoices();
 

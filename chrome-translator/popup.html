@@ -100,7 +100,12 @@
       </div>
       <p style="font-size: 10px; color: #888; margin-top: 8px;">Изменения вступят в силу при следующем запуске.</p>
     </div>
-    <button id="start">Включить перевод</button>
+    <div class="control-group" style="margin-top: 10px;">
+      <label style="font-size: 12px; display: block; margin-bottom: 5px;">Глоссарий (свой перевод терминов):</label>
+      <textarea id="glossary-text" placeholder="Например:&#10;FWC = Комиссия по рыбе&#10;Race Condition = Состояние гонки" style="width: 100%; height: 60px; padding: 5px; border-radius: 4px; border: none; background: #3d3d4a; color: white; font-size: 12px; resize: vertical;"></textarea>
+      <div style="font-size: 10px; color: #888; margin-top: 4px;">Формат: Оригинал = Перевод (каждая фраза с новой строки)</div>
+    </div>
+	<button id="start">Включить перевод</button>
     <button id="stop" disabled>Выключить</button>
 	<button id="download-srt" style="background: #4caf50; margin-top: 10px;">Скачать SRT (субтитры)</button>
     <div id="status">Выключено</div>
@@ -165,15 +170,26 @@
         Продолжать при смене вкладок
       </label>
     </div>	
-	    <!-- Блок доната -->
+	    <!-- Блок доната и соцсетей -->
     <div class="donate-block" style="text-align: center; margin-top: 15px; padding-top: 10px; border-top: 1px solid #3d3d4a;">
-      <p style="font-size: 12px; color: #aaa; margin-bottom: 8px;">Понравился перевод?</p>
-      <a href="https://boosty.to/dimonyasha" target="_blank" style="display: inline-flex; align-items: center; gap: 6px; background: rgba(239, 83, 80, 0.15); color: #ef5350; padding: 8px 16px; border-radius: 8px; text-decoration: none; font-size: 13px; font-weight: 600; transition: background 0.2s;">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
-        Поддержать чашечкой кофе
-      </a>
+      <p style="font-size: 12px; color: #aaa; margin-bottom: 8px;">Поддержите проект или следите за новостями:</p>
+      <div style="display: flex; gap: 8px; justify-content: center;">
+          <a href="https://boosty.to/dimonyasha" target="_blank" style="display: inline-flex; align-items: center; gap: 6px; background: rgba(239, 83, 80, 0.15); color: #ef5350; padding: 8px 12px; border-radius: 8px; text-decoration: none; font-size: 12px; font-weight: 600; transition: background 0.2s;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+            Boosty
+          </a>
+          <a href="https://t.me/synclingua" target="_blank" style="display: inline-flex; align-items: center; gap: 6px; background: rgba(44, 165, 224, 0.15); color: #2CA5E0; padding: 8px 12px; border-radius: 8px; text-decoration: none; font-size: 12px; font-weight: 600; transition: background 0.2s;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+            Telegram
+          </a>
+      </div>
+    </div>
+	    <!-- Версия -->
+    <div style="text-align: center; font-size: 11px; color: #666; margin-top: 15px; margin-bottom: 5px;">
+        SyncLingua v1.5.1
     </div>
   </div>
+  <!-- ВОТ ЭТА СТРОЧКА САМАЯ ВАЖНАЯ, БЕЗ НЕЁ НИЧЕГО НЕ РАБОТАЕТ -->
   <script src="popup.js"></script>
 </body>
 </html>

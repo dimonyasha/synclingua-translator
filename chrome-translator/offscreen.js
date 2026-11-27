@@ -41,6 +41,7 @@ let playChain = Promise.resolve(); // сохраняет порядок восп
 let currentTransVol = 1.0;
 let currentOrigVol = 1.0;
 let currentSubtitleOnly = false;
+let currentGlossary = "";
 
 // ------------------------------------------------------------ связь с background
 function report(status, detail = '') {
@@ -59,6 +60,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         preferredChunkSeconds = msg.chunkSeconds ?? 4.0;
         currentTranslation = msg.translation || { mode: 'local' };
 		currentSubtitleOnly = msg.subtitleOnly ?? false;
+		currentGlossary = msg.glossary ?? "";
         await startCapture(msg.streamId);
       } 
       else if (msg.type === 'stop-capture') await stopCapture();
@@ -78,6 +80,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           ws.send(JSON.stringify({ type: 'set-subtitle-only', value: currentSubtitleOnly }));
         }
       }      
+	  else if (msg.type === 'set-glossary') {
+          currentGlossary = msg.glossary;
+          if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'set-glossary', glossary: currentGlossary }));
+          }
+      }
 	  else if (msg.type === 'set-volume') {
         currentTransVol = msg.transVol;
         currentOrigVol = msg.origVol;
@@ -224,12 +232,11 @@ async function connectWs() {
       console.log(`[offscreen] Отправляем subtitle_only = ${currentSubtitleOnly}`);
       sock.send(JSON.stringify({ type: 'set-subtitle-only', value: currentSubtitleOnly }));
       sock.send(JSON.stringify({ type: 'set-chunk', value: preferredChunkSeconds }));
-      // ДОБАВИТЬ ЭТИ СТРОКИ:
       sock.send(JSON.stringify({ 
           type: 'set-translation', 
-          ...currentTranslation
+          ...currentTranslation 
       }));
-
+      sock.send(JSON.stringify({ type: 'set-glossary', glossary: currentGlossary }));
       report('running');
     };
 
